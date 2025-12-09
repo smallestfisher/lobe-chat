@@ -47,6 +47,7 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    "scripts/electronWorkflow/buildNextApp.mts"
   ]
 }
