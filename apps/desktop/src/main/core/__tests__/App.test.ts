@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LOCAL_DATABASE_DIR } from '@/const/dir';
 
+// Import after mocks are set up
+import { App } from '../App';
+
 // Mock electron modules
 vi.mock('electron', () => ({
   app: {
@@ -76,7 +79,7 @@ vi.mock('@/const/env', () => ({
 
 vi.mock('@/const/dir', () => ({
   buildDir: '/mock/build',
-  nextStandaloneDir: '/mock/standalone',
+  nextExportDir: '/mock/export/out',
   LOCAL_DATABASE_DIR: 'lobehub-local-db',
   appStorageDir: '/mock/storage/path',
   userDataDir: '/mock/user/data',
@@ -155,19 +158,9 @@ vi.mock('../ui/TrayManager', () => ({
   })),
 }));
 
-vi.mock('@/utils/next-electron-rsc', () => ({
-  createHandler: vi.fn(() => ({
-    createInterceptor: vi.fn(),
-    registerCustomHandler: vi.fn(),
-  })),
-}));
-
 // Mock controllers and services
 vi.mock('../../controllers/*Ctr.ts', () => ({}));
 vi.mock('../../services/*Srv.ts', () => ({}));
-
-// Import after mocks are set up
-import { App } from '../App';
 
 describe('App - Database Lock Cleanup', () => {
   let appInstance: App;
