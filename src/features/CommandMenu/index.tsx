@@ -20,6 +20,7 @@ const CommandMenu = memo(() => {
   const {
     chatMessages,
     closeCommandMenu,
+    context,
     handleAskAI,
     handleBack,
     handleCreateSession,
@@ -39,7 +40,6 @@ const CommandMenu = memo(() => {
     searchResults,
     setPages,
     setSearch,
-    showCreateSession,
   } = useCommandMenu();
 
   if (!mounted || !open) return null;
@@ -74,6 +74,7 @@ const CommandMenu = memo(() => {
           shouldFilter={!isAiMode}
         >
           <CommandInput
+            context={context}
             hasPages={pages.length > 0}
             isAiMode={isAiMode}
             onBack={handleBack}
@@ -87,12 +88,12 @@ const CommandMenu = memo(() => {
 
             {!page && (
               <MainMenu
+                context={context}
                 onCreateSession={handleCreateSession}
                 onExternalLink={handleExternalLink}
                 onNavigate={handleNavigate}
                 onNavigateToTheme={() => navigateToPage('theme')}
                 pathname={pathname}
-                showCreateSession={showCreateSession}
                 styles={styles}
               />
             )}

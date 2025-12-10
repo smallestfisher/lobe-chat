@@ -1,6 +1,7 @@
 'use client';
 
 import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
+import { useTheme } from 'antd-style';
 import { memo } from 'react';
 import { Flexbox } from 'react-layout-kit';
 
@@ -30,12 +31,19 @@ const PageEditorCanvas = memo(() => {
   const editor = usePageEditorStore((s) => s.editor);
   const flushSave = usePageEditorStore((s) => s.flushSave);
 
+  const theme = useTheme();
+
   // Register Files scope and save document hotkey
   useRegisterFilesHotkeys();
   useSaveDocumentHotkey(flushSave);
 
   return (
-    <Flexbox height={'100%'} horizontal width={'100%'}>
+    <Flexbox
+      height={'100%'}
+      horizontal
+      style={{ backgroundColor: theme.colorBgContainer }}
+      width={'100%'}
+    >
       <Flexbox flex={1} height={'100%'}>
         <Header />
         <Flexbox
@@ -65,7 +73,6 @@ const PageEditor = memo<PageEditorProps>(
     const pageAgentId = useAgentStore(builtinAgentSelectors.pageAgentId);
     useInitBuiltinAgent(BUILTIN_AGENT_SLUGS.pageAgent);
 
-    // Don't render conversation provider until agent is initialized
     if (!pageAgentId) return <Loading debugId="PageEditor > PageAgent Init" />;
 
     return (

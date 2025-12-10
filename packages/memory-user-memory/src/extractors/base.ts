@@ -130,8 +130,12 @@ export abstract class BaseMemoryExtractor<
             attributes: {
               [ATTR_GEN_AI_OPERATION_NAME]: 'generate_content',
               [ATTR_GEN_AI_REQUEST_MODEL]: this.model,
-              'gen_ai.input.openai.messages': serializeForSpan(payload.messages),
-              'gen_ai.input.openai.schema': serializeForSpan(payload.schema),
+              'lobe-chat.memory.extractor.context': options?.retrievedContexts,
+              'lobe-chat.memory.extractor.identities_context': options?.retrievedIdentitiesContext,
+              'lobe-chat.memory.extractor.language': options?.language,
+              'lobe-chat.memory.extractor.source_id': options?.sourceId,
+              'lobe-chat.memory.extractor.top_k': options?.topK,
+              'lobe-chat.memory.extractor.user_id': options?.userId,
             },
           },
           async (span) => {

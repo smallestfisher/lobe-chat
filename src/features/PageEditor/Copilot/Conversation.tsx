@@ -1,10 +1,10 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { Flexbox } from 'react-layout-kit';
 
 import type { ActionKeys } from '@/features/ChatInput';
 import { ChatInput, ChatList } from '@/features/Conversation';
 
-import TopicSelector from './TopicSeletor';
+import CopilotToolbar from './Toolbar';
 
 interface ConversationProps {
   agentId: string;
@@ -12,9 +12,16 @@ interface ConversationProps {
 const actions: ActionKeys[] = ['model'];
 
 const Conversation = memo<ConversationProps>(({ agentId }) => {
+  const [isHovered, setIsHovered] = useState(false);
+
   return (
-    <Flexbox flex={1} height={'100%'}>
-      <TopicSelector agentId={agentId} />
+    <Flexbox
+      flex={1}
+      height={'100%'}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <CopilotToolbar agentId={agentId} isHovered={isHovered} />
       <Flexbox flex={1} style={{ overflow: 'hidden' }}>
         <ChatList />
       </Flexbox>

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useDebounce } from 'ahooks';
+import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import useSWR from 'swr';
 
@@ -7,9 +8,9 @@ import { lambdaClient } from '@/libs/trpc/client';
 import { useAgentStore } from '@/store/agent';
 import { useGlobalStore } from '@/store/global';
 import { useHomeStore } from '@/store/home';
-import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 
 import type { ChatMessage, ThemeMode } from './types';
+import { detectContext } from './utils/context';
 
 export const useCommandMenu = () => {
   const [open, setOpen] = useGlobalStore((s) => [s.status.showCommandMenu, s.updateSystemStatus]);
@@ -24,14 +25,19 @@ export const useCommandMenu = () => {
   const switchThemeMode = useGlobalStore((s) => s.switchThemeMode);
   const createAgent = useAgentStore((s) => s.createAgent);
   const refreshAgentList = useHomeStore((s) => s.refreshAgentList);
-  const { showCreateSession } = useServerConfigStore(featureFlagsSelectors);
 
   const page = pages.at(-1);
   const isAiMode = page === 'ai-chat';
 
+  // Detect context based on current pathname
+  const context = useMemo(() => detectContext(pathname), [pathname]);
+
+  // Debounce search input to reduce API calls
+  const debouncedSearch = useDebounce(search, { wait: 300 });
+
   // Search functionality
-  const hasSearch = search.trim().length > 0;
-  const searchQuery = search.trim();
+  const hasSearch = debouncedSearch.trim().length > 0;
+  const searchQuery = debouncedSearch.trim();
 
   const { data: searchResults, isLoading: isSearching } = useSWR<SearchResult[]>(
     hasSearch && !isAiMode ? ['search', searchQuery] : null,
@@ -126,6 +132,7 @@ export const useCommandMenu = () => {
   return {
     chatMessages,
     closeCommandMenu,
+    context,
     handleAskAI,
     handleBack,
     handleCreateSession,
@@ -145,6 +152,5 @@ export const useCommandMenu = () => {
     searchResults: searchResults || ([] as SearchResult[]),
     setPages,
     setSearch,
-    showCreateSession,
   };
 };

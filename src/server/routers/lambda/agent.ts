@@ -130,6 +130,20 @@ export const agentRouter = router({
       return ctx.agentModel.deleteAgentKnowledgeBase(input.agentId, input.knowledgeBaseId);
     }),
 
+  /**
+   * Get an agent by marketIdentifier
+   * @returns agent id if exists, null otherwise
+   */
+  getAgentByMarketIdentifier: agentProcedure
+    .input(
+      z.object({
+        marketIdentifier: z.string(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.agentModel.getAgentByMarketIdentifier(input.marketIdentifier);
+    }),
+
   getAgentConfig: agentProcedure
     .input(
       z.object({

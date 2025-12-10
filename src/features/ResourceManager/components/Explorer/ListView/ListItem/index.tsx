@@ -53,9 +53,12 @@ const useStyles = createStyles(({ css, token, cx, isDarkMode }) => {
     `,
 
     dragOver: css`
-      background: ${token.colorFillSecondary} !important;
-      outline: 2px dashed ${token.colorPrimary};
-      outline-offset: -2px;
+      color: ${token.colorBgElevated} !important;
+      background-color: ${token.colorText} !important;
+
+      * {
+        color: ${token.colorBgElevated} !important;
+      }
     `,
 
     dragging: css`
@@ -163,6 +166,7 @@ const FileListItem = memo<FileListItemProps>(
         name,
         sourceType,
       },
+      disabled: !libraryId,
       id,
     });
 

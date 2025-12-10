@@ -2,7 +2,9 @@ import { Command } from 'cmdk';
 import {
   BookOpen,
   Bot,
+  Brain,
   Compass,
+  FileText,
   Github,
   MessageCircle,
   Monitor,
@@ -13,7 +15,11 @@ import {
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import ContextCommands from './ContextCommands';
+import type { Context } from './types';
+
 interface MainMenuProps {
+  context?: Context;
   onCreateSession: () => void;
   onExternalLink: (url: string) => void;
   onNavigate: (path: string) => void;
@@ -29,27 +35,27 @@ interface MainMenuProps {
 
 const MainMenu = memo<MainMenuProps>(
   ({
+    context,
     onCreateSession,
     onExternalLink,
     onNavigate,
     onNavigateToTheme,
     pathname,
-    showCreateSession,
     styles,
   }) => {
     const { t } = useTranslation('common');
 
     return (
       <>
+        {context && <ContextCommands context={context} onNavigate={onNavigate} styles={styles} />}
+
         <Command.Group>
-          {showCreateSession && (
-            <Command.Item onSelect={onCreateSession} value="create new agent assistant">
-              <Bot className={styles.icon} />
-              <div className={styles.itemContent}>
-                <div className={styles.itemLabel}>{t('cmdk.newAgent')}</div>
-              </div>
-            </Command.Item>
-          )}
+          <Command.Item onSelect={onCreateSession} value="create new agent assistant">
+            <Bot className={styles.icon} />
+            <div className={styles.itemContent}>
+              <div className={styles.itemLabel}>{t('cmdk.newAgent')}</div>
+            </div>
+          </Command.Item>
 
           {!pathname?.startsWith('/settings') && (
             <Command.Item onSelect={() => onNavigate('/settings')} value="settings">
@@ -90,6 +96,22 @@ const MainMenu = memo<MainMenuProps>(
               <BookOpen className={styles.icon} />
               <div className={styles.itemContent}>
                 <div className={styles.itemLabel}>{t('cmdk.knowledgeBase')}</div>
+              </div>
+            </Command.Item>
+          )}
+          {!pathname?.startsWith('/page') && (
+            <Command.Item onSelect={() => onNavigate('/page')} value="page documents write">
+              <FileText className={styles.icon} />
+              <div className={styles.itemContent}>
+                <div className={styles.itemLabel}>{t('cmdk.pages')}</div>
+              </div>
+            </Command.Item>
+          )}
+          {!pathname?.startsWith('/memory') && (
+            <Command.Item onSelect={() => onNavigate('/memory')} value="memory">
+              <Brain className={styles.icon} />
+              <div className={styles.itemContent}>
+                <div className={styles.itemLabel}>{t('cmdk.memory')}</div>
               </div>
             </Command.Item>
           )}

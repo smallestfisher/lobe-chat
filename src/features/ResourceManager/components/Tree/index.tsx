@@ -50,18 +50,12 @@ const useStyles = createStyles(({ css, token }) => ({
     opacity: 0.5;
   `,
   fileItemDragOver: css`
-    background-color: ${token.colorFillSecondary} !important;
-    outline: 2px dashed ${token.colorPrimary};
-    outline-offset: -2px;
-  `,
-  rootDropZone: css`
-    min-height: 100%;
-    transition: background-color 0.2s;
-  `,
-  rootDropZoneActive: css`
-    background-color: ${token.colorFillQuaternary};
-    outline: 2px dashed ${token.colorPrimary};
-    outline-offset: -4px;
+    color: ${token.colorBgElevated} !important;
+    background-color: ${token.colorText} !important;
+
+    * {
+      color: ${token.colorBgElevated} !important;
+    }
   `,
 }));
 
@@ -434,31 +428,32 @@ FileTreeItem.displayName = 'FileTreeItem';
  * As a sidebar along with the Explorer to work
  */
 const FileTree = memo<FileTreeProps>(() => {
-  const { styles, cx } = useStyles();
   const { currentFolderSlug } = useFolderPath();
 
-  const useFetchKnowledgeItems = useFileStore((s) => s.useFetchKnowledgeItems);
+  const [useFetchKnowledgeItems, useFetchFolderBreadcrumb, useFetchKnowledgeItem] = useFileStore(
+    (s) => [s.useFetchKnowledgeItems, s.useFetchFolderBreadcrumb, s.useFetchKnowledgeItem],
+  );
 
-  const libraryId = useResourceManagerStore((s) => s.libraryId);
+  const [libraryId, currentViewItemId] = useResourceManagerStore((s) => [
+    s.libraryId,
+    s.currentViewItemId,
+  ]);
 
   // Force re-render when tree state changes
   const [updateKey, forceUpdate] = useReducer((x) => x + 1, 0);
 
   // Get the persisted state for this knowledge base
-  const state = getTreeState(libraryId || '');
+  const state = React.useMemo(() => getTreeState(libraryId || ''), [libraryId]);
   const { expandedFolders, loadedFolders, folderChildrenCache, loadingFolders } = state;
 
-  // Special droppable ID for root folder
-  const ROOT_DROP_ID = `__root__:${libraryId}`;
+  // Fetch breadcrumb for current folder
+  const { data: folderBreadcrumb } = useFetchFolderBreadcrumb(currentFolderSlug);
 
-  const { setNodeRef: setRootDropRef, isOver: isRootDropOver } = useDroppable({
-    data: {
-      fileType: 'custom/folder',
-      isFolder: true,
-      name: 'Root',
-    },
-    id: ROOT_DROP_ID,
-  });
+  // Fetch current file when viewing a file
+  const { data: currentFile } = useFetchKnowledgeItem(currentViewItemId);
+
+  // Track parent folder key for file selection - stored in a ref to avoid hook order issues
+  const parentFolderKeyRef = React.useRef<string | null>(null);
 
   // Fetch root level data using SWR
   const { data: rootData, isLoading } = useFetchKnowledgeItems({
@@ -504,7 +499,7 @@ const FileTree = memo<FileTreeProps>(() => {
       try {
         // Use SWR mutate to trigger a fetch that will be cached and shared with FileExplorer
         const { mutate: swrMutate } = await import('swr');
-        const data = await swrMutate(
+        const response = await swrMutate(
           [
             'useFetchKnowledgeItems',
             {
@@ -524,12 +519,12 @@ const FileTree = memo<FileTreeProps>(() => {
           },
         );
 
-        if (!data) {
+        if (!response || !response.items) {
           console.error('Failed to load folder contents: no data returned');
           return;
         }
 
-        const childItems: TreeItem[] = data.map((item) => ({
+        const childItems: TreeItem[] = response.items.map((item) => ({
           fileType: item.fileType,
           id: item.id,
           isFolder: item.fileType === 'custom/folder',
@@ -570,17 +565,101 @@ const FileTree = memo<FileTreeProps>(() => {
     [state, forceUpdate],
   );
 
+  // Reset parent folder key when switching libraries
+  React.useEffect(() => {
+    parentFolderKeyRef.current = null;
+  }, [libraryId]);
+
+  // Auto-expand folders when navigating to a folder in Explorer
+  React.useEffect(() => {
+    if (!folderBreadcrumb || folderBreadcrumb.length === 0) return;
+
+    let hasChanges = false;
+
+    // Expand all folders in the breadcrumb path
+    for (const crumb of folderBreadcrumb) {
+      const key = crumb.slug || crumb.id;
+      if (!state.expandedFolders.has(key)) {
+        state.expandedFolders.add(key);
+        hasChanges = true;
+      }
+
+      // Load folder contents if not already loaded
+      if (!state.loadedFolders.has(key) && !state.loadingFolders.has(key)) {
+        handleLoadFolder(key);
+      }
+    }
+
+    if (hasChanges) {
+      forceUpdate();
+    }
+  }, [folderBreadcrumb, state, forceUpdate, handleLoadFolder]);
+
+  // Auto-expand parent folder when viewing a file
+  React.useEffect(() => {
+    if (!currentFile || !currentViewItemId) {
+      parentFolderKeyRef.current = null;
+      return;
+    }
+
+    // If the file has a parent folder, expand the path to it
+    if (currentFile.parentId) {
+      // Fetch the parent folder's breadcrumb to get the full path
+      const fetchParentPath = async () => {
+        try {
+          const parentBreadcrumb = await fileService.getFolderBreadcrumb(currentFile.parentId!);
+
+          if (!parentBreadcrumb || parentBreadcrumb.length === 0) return;
+
+          let hasChanges = false;
+
+          // The last item in breadcrumb is the immediate parent folder
+          const parentFolder = parentBreadcrumb.at(-1)!;
+          const parentKey = parentFolder.slug || parentFolder.id;
+          parentFolderKeyRef.current = parentKey;
+
+          // Expand all folders in the parent's breadcrumb path
+          for (const crumb of parentBreadcrumb) {
+            const key = crumb.slug || crumb.id;
+            if (!state.expandedFolders.has(key)) {
+              state.expandedFolders.add(key);
+              hasChanges = true;
+            }
+
+            // Load folder contents if not already loaded
+            if (!state.loadedFolders.has(key) && !state.loadingFolders.has(key)) {
+              handleLoadFolder(key);
+            }
+          }
+
+          if (hasChanges) {
+            forceUpdate();
+          }
+        } catch (error) {
+          console.error('Failed to fetch parent folder breadcrumb:', error);
+        }
+      };
+
+      fetchParentPath();
+    } else {
+      parentFolderKeyRef.current = null;
+    }
+  }, [currentFile, currentViewItemId, state, forceUpdate, handleLoadFolder]);
+
   if (isLoading) {
     return <TreeSkeleton />;
   }
 
+  // Determine which item should be highlighted
+  // If viewing a file, highlight its parent folder
+  // Otherwise, highlight the current folder
+  const selectedKey =
+    currentViewItemId && parentFolderKeyRef.current
+      ? parentFolderKeyRef.current
+      : currentFolderSlug;
+
   return (
-    <Flexbox
-      className={cx(styles.rootDropZone, isRootDropOver && styles.rootDropZoneActive)}
-      gap={2}
-      paddingInline={4}
-      ref={setRootDropRef}
-    >
+    <Flexbox gap={2} paddingInline={4}>
       {items.map((item) => (
         <FileTreeItem
           expandedFolders={expandedFolders}
@@ -591,7 +670,7 @@ const FileTree = memo<FileTreeProps>(() => {
           loadingFolders={loadingFolders}
           onLoadFolder={handleLoadFolder}
           onToggleFolder={handleToggleFolder}
-          selectedKey={currentFolderSlug}
+          selectedKey={selectedKey}
           updateKey={updateKey}
         />
       ))}

@@ -7,6 +7,7 @@ import {
   MouseEvent,
   ReactNode,
   RefObject,
+  Suspense,
   memo,
   useCallback,
   useEffect,
@@ -15,6 +16,8 @@ import {
 } from 'react';
 import { Flexbox } from 'react-layout-kit';
 import type { VListHandle } from 'virtua';
+
+import BubblesLoading from '@/components/BubblesLoading';
 
 import ContextMenu from '../components/ContextMenu';
 import History from '../components/History';
@@ -25,7 +28,6 @@ import {
   useConversationStore,
   virtuaListSelectors,
 } from '../store';
-import type { ActionsBarConfig } from '../types';
 import AssistantMessage from './Assistant';
 import AssistantGroupMessage from './AssistantGroup';
 import SupervisorMessage from './Supervisor';
@@ -46,7 +48,6 @@ const useStyles = createStyles(({ css, prefixCls }) => ({
 }));
 
 export interface MessageItemProps {
-  actionsBar?: ActionsBarConfig;
   className?: string;
   disableEditing?: boolean;
   enableHistoryDivider?: boolean;
@@ -59,7 +60,6 @@ export interface MessageItemProps {
 
 const MessageItem = memo<MessageItemProps>(
   ({
-    actionsBar,
     className,
     enableHistoryDivider,
     id,
@@ -74,8 +74,9 @@ const MessageItem = memo<MessageItemProps>(
 
     const topic = useConversationStore((s) => s.context.topicId);
 
-    // Get message from ConversationStore instead of ChatStore
+    // Get message and actionsBar from ConversationStore
     const message = useConversationStore(dataSelectors.getDisplayMessageById(id), isEqual);
+    const actionsBar = useConversationStore((s) => s.actionsBar);
     const role = message?.role;
 
     const [editing, isMessageCreating] = useConversationStore((s) => [
@@ -180,20 +181,12 @@ const MessageItem = memo<MessageItemProps>(
     const renderContent = useCallback(() => {
       switch (role) {
         case 'user': {
-          return (
-            <UserMessage
-              actionsConfig={actionsBar?.user}
-              disableEditing={disableEditing}
-              id={id}
-              index={index}
-            />
-          );
+          return <UserMessage disableEditing={disableEditing} id={id} index={index} />;
         }
 
         case 'assistant': {
           return (
             <AssistantMessage
-              actionsConfig={actionsBar?.assistant}
               disableEditing={disableEditing}
               id={id}
               index={index}
@@ -205,7 +198,6 @@ const MessageItem = memo<MessageItemProps>(
         case 'assistantGroup': {
           return (
             <AssistantGroupMessage
-              actionsConfig={actionsBar?.assistantGroup ?? actionsBar?.assistant}
               disableEditing={disableEditing}
               id={id}
               index={index}
@@ -237,7 +229,7 @@ const MessageItem = memo<MessageItemProps>(
           onContextMenu={onContextMenu}
           ref={setContainerRef}
         >
-          {renderContent()}
+          <Suspense fallback={<BubblesLoading />}>{renderContent()}</Suspense>
           {endRender}
         </Flexbox>
         <ContextMenu

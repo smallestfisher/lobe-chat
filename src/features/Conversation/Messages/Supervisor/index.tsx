@@ -11,12 +11,12 @@ import { useTranslation } from 'react-i18next';
 import { Flexbox } from 'react-layout-kit';
 
 import { DEFAULT_SUPERVISOR_AVATAR } from '@/const/meta';
-import { ChatItem } from '@/features/ChatItem';
-import TodoList, { TodoData } from './TodoList';
+import { ChatItem } from '@/features/Conversation/ChatItem';
 import { useChatStore } from '@/store/chat';
 import { ChatErrorType } from '@/types/fetch';
 
 import { dataSelectors, useConversationStore } from '../../store';
+import TodoList, { TodoData } from './TodoList';
 
 const useStyles = createStyles(({ token, css, cx }) => ({
   modelInfo: cx(css`
@@ -141,7 +141,6 @@ const SupervisorMessage = memo<SupervisorMessageProps>(({ id }) => {
     const model = item.extra?.model;
     const provider = item.extra?.provider;
     const hasModelInfo = model || provider;
-
     return (
       <ChatItem
         avatar={{
@@ -150,27 +149,19 @@ const SupervisorMessage = memo<SupervisorMessageProps>(({ id }) => {
         }}
         loading={false}
         placement="left"
-        primary={false}
-        renderMessage={() => (
-          <Flexbox gap={8}>
-            <TodoList data={todoData} />
-            {hasModelInfo && (
-              <Flexbox align={'center'} className={styles.modelInfo} gap={4} horizontal>
-                {model && <ModelIcon model={model} type={'mono'} />}
-                {provider && model ? `${provider}/${model}` : provider || model}
-              </Flexbox>
-            )}
-          </Flexbox>
-        )}
         showTitle={true}
         time={updatedAt || createdAt}
-        variant="bubble"
-      />
+      >
+        <TodoList data={todoData} />
+        {hasModelInfo && (
+          <Flexbox align={'center'} className={styles.modelInfo} gap={4} horizontal>
+            {model && <ModelIcon model={model} type={'mono'} />}
+            {provider && model ? `${provider}/${model}` : provider || model}
+          </Flexbox>
+        )}
+      </ChatItem>
     );
   }
-
-  // Render regular supervisor message
-  const renderErrorMessage = error ? () => errorContentNode : undefined;
 
   return (
     <ChatItem
@@ -180,15 +171,14 @@ const SupervisorMessage = memo<SupervisorMessageProps>(({ id }) => {
       }}
       loading={false}
       message={error ? undefined : content}
-      placement="left"
-      primary={false}
-      renderMessage={renderErrorMessage}
+      placement={'left'}
       showTitle={true}
       time={updatedAt || createdAt}
-      variant={isTodoMessage || error ? 'docs' : 'bubble'}
-    />
+    >
+      {error ? errorContentNode : undefined}
+    </ChatItem>
   );
-});
+}, isEqual);
 
 SupervisorMessage.displayName = 'SupervisorMessage';
 

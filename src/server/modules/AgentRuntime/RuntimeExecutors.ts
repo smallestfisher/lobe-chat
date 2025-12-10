@@ -2,20 +2,21 @@ import {
   AgentEvent,
   AgentInstruction,
   CallLLMPayload,
+  GeneralAgentCallLLMResultPayload,
   InstructionExecutor,
   UsageCounter,
 } from '@lobechat/agent-runtime';
 import { ToolNameResolver } from '@lobechat/context-engine';
 import { consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { ChatToolPayload, ClientSecretPayload, MessageToolCall } from '@lobechat/types';
+import { serializePartsForStorage } from '@lobechat/utils';
 import debug from 'debug';
 
 import { MessageModel } from '@/database/models/message';
-import { GeneralAgentLLMResultPayload } from '@/server/modules/AgentRuntime/GeneralAgent';
 import { initModelRuntimeWithUserPayload } from '@/server/modules/ModelRuntime';
 import { ToolExecutionService } from '@/server/services/toolExecution';
 
-import { StreamEventManager } from './StreamEventManager';
+import type { IStreamEventManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:streaming-executors');
 
@@ -30,7 +31,7 @@ export interface RuntimeExecutorContext {
   messageModel: MessageModel;
   operationId: string;
   stepIndex: number;
-  streamManager: StreamEventManager;
+  streamManager: IStreamEventManager;
   toolExecutionService: ToolExecutionService;
   userId?: string;
   userPayload?: ClientSecretPayload;
@@ -49,6 +50,14 @@ export const createRuntimeExecutors = (
     const { operationId, stepIndex, streamManager } = ctx;
     const events: AgentEvent[] = [];
 
+    // Fallback to state's modelRuntimeConfig if not in payload
+    const model = llmPayload.model || state.modelRuntimeConfig?.model;
+    const provider = llmPayload.provider || state.modelRuntimeConfig?.provider;
+
+    if (!model || !provider) {
+      throw new Error('Model and provider are required for call_llm instruction');
+    }
+
     // 类型断言确保 payload 的正确性
     const operationLogId = `${operationId}:${stepIndex}`;
 
@@ -56,13 +65,17 @@ export const createRuntimeExecutors = (
 
     log(`${stagePrefix} Starting operation`);
 
+    // Get parentId from payload (parentId or parentMessageId depending on payload type)
+    const parentId = llmPayload.parentId || (llmPayload as any).parentMessageId;
+
     // create assistant message
     const assistantMessageItem = await ctx.messageModel.create({
+      agentId: state.metadata!.agentId!,
       content: '',
-      model: llmPayload.model,
-      provider: llmPayload.provider,
+      model,
+      parentId,
+      provider,
       role: 'assistant',
-      sessionId: state.metadata!.sessionId!,
       threadId: state.metadata?.threadId,
       topicId: state.metadata?.topicId,
     });
@@ -71,8 +84,8 @@ export const createRuntimeExecutors = (
     await streamManager.publishStreamEvent(operationId, {
       data: {
         assistantMessage: assistantMessageItem,
-        model: llmPayload.model,
-        provider: llmPayload.provider,
+        model,
+        provider,
       },
       stepIndex,
       type: 'stream_start',
@@ -87,22 +100,26 @@ export const createRuntimeExecutors = (
       let grounding: any = null;
       let currentStepUsage: any = undefined;
 
+      // Multimodal content parts tracking
+      type ContentPart = { text: string; type: 'text' } | { image: string; type: 'image' };
+      let contentParts: ContentPart[] = [];
+      let reasoningParts: ContentPart[] = [];
+      let hasContentImages = false;
+      let hasReasoningImages = false;
+
       // 初始化 ModelRuntime
-      const modelRuntime = initModelRuntimeWithUserPayload(
-        llmPayload.provider,
-        ctx.userPayload || {},
-      );
+      const modelRuntime = initModelRuntimeWithUserPayload(provider, ctx.userPayload || {});
 
       // 构造 ChatStreamPayload
       const chatPayload = {
         messages: llmPayload.messages,
-        model: llmPayload.model,
+        model,
         tools: llmPayload.tools,
       };
 
       log(
         `${stagePrefix} calling model-runtime chat (model: %s, messages: %d, tools: %d)`,
-        llmPayload.model,
+        model,
         llmPayload.messages.length,
         llmPayload.tools?.length ?? 0,
       );
@@ -164,6 +181,15 @@ export const createRuntimeExecutors = (
             if (data.usage) {
               currentStepUsage = data.usage;
             }
+          },
+          onGrounding: async (groundingData) => {
+            log(`[${operationLogId}][grounding] %O`, groundingData);
+            grounding = groundingData;
+
+            await streamManager.publishStreamChunk(operationId, stepIndex, {
+              chunkType: 'grounding',
+              grounding: groundingData,
+            });
           },
           onText: async (text) => {
             // log(`[${operationLogId}][text]`, text);
@@ -271,14 +297,39 @@ export const createRuntimeExecutors = (
       log('[%s:%d] call_llm completed', operationId, stepIndex);
 
       // ===== 1. 先保存原始 usage 到 message.metadata =====
+      // Determine final content - use serialized parts if has images, otherwise plain text
+      const finalContent = hasContentImages ? serializePartsForStorage(contentParts) : content;
+
+      // Determine final reasoning - handle multimodal reasoning
+      let finalReasoning: any = undefined;
+      if (hasReasoningImages) {
+        // Has images, use multimodal format
+        finalReasoning = {
+          content: serializePartsForStorage(reasoningParts),
+          isMultimodal: true,
+        };
+      } else if (thinkingContent) {
+        // Has text from reasoning but no images
+        finalReasoning = {
+          content: thinkingContent,
+        };
+      }
+
       try {
+        // Build metadata object
+        const metadata: Record<string, any> = {};
+        if (currentStepUsage && typeof currentStepUsage === 'object') {
+          Object.assign(metadata, currentStepUsage);
+        }
+        if (hasContentImages) {
+          metadata.isMultimodal = true;
+        }
+
         await ctx.messageModel.update(assistantMessageItem.id, {
-          content,
-          // 保存原始 usage，不做任何修改
-          metadata: currentStepUsage,
-          reasoning: {
-            content: thinkingContent,
-          },
+          content: finalContent,
+          imageList: imageList.length > 0 ? imageList : undefined,
+          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+          reasoning: finalReasoning,
           search: grounding,
           tools: toolsCalling.length > 0 ? toolsCalling : undefined,
         });
@@ -315,14 +366,15 @@ export const createRuntimeExecutors = (
         nextContext: {
           payload: {
             hasToolsCalling: toolsCalling.length > 0,
+            // Pass assistant message ID as parentMessageId for tool calls
+            parentMessageId: assistantMessageItem.id,
             result: { content, tool_calls },
             toolsCalling: toolsCalling,
-          } as GeneralAgentLLMResultPayload,
+          } as GeneralAgentCallLLMResultPayload,
           phase: 'llm_result',
           session: {
             eventCount: events.length,
             messageCount: newState.messages.length,
-            // AgentRuntimeContext requires sessionId for compatibility with @lobechat/agent-runtime
             sessionId: operationId,
             status: 'running',
             stepCount: state.stepCount + 1,
@@ -400,18 +452,21 @@ export const createRuntimeExecutors = (
       });
 
       // 最终更新数据库
+      let toolMessageId: string | undefined;
       try {
-        await ctx.messageModel.create({
+        const toolMessage = await ctx.messageModel.create({
+          agentId: state.metadata!.agentId!,
           content: executionResult.content,
+          parentId: payload.parentMessageId,
           plugin: chatToolPayload as any,
           pluginError: executionResult.error,
           pluginState: executionResult.state,
           role: 'tool',
-          sessionId: state.metadata!.sessionId!,
           threadId: state.metadata?.threadId,
           tool_call_id: chatToolPayload.id,
           topicId: state.metadata?.topicId,
         });
+        toolMessageId = toolMessage.id;
       } catch (error) {
         console.error('[StreamingToolExecutor] Failed to create tool message: %O', error);
       }
@@ -465,6 +520,8 @@ export const createRuntimeExecutors = (
             data: executionResult,
             executionTime,
             isSuccess,
+            // Pass tool message ID as parentMessageId for the next LLM call
+            parentMessageId: toolMessageId,
             toolCall: chatToolPayload,
             toolCallId: chatToolPayload.id,
           },
@@ -472,7 +529,6 @@ export const createRuntimeExecutors = (
           session: {
             eventCount: events.length,
             messageCount: newState.messages.length,
-            // AgentRuntimeContext requires sessionId for compatibility with @lobechat/agent-runtime
             sessionId: operationId,
             status: 'running',
             stepCount: state.stepCount + 1,
@@ -605,5 +661,99 @@ export const createRuntimeExecutors = (
       newState,
       // 不提供 nextContext，因为需要等待人工干预
     };
+  },
+
+  /**
+   * 解决被取消的工具调用
+   * 为取消的工具调用创建带有 'aborted' 干预状态的工具消息
+   */
+  resolve_aborted_tools: async (instruction, state) => {
+    const { payload } = instruction as Extract<AgentInstruction, { type: 'resolve_aborted_tools' }>;
+    const { parentMessageId, toolsCalling } = payload;
+    const { operationId, stepIndex, streamManager } = ctx;
+    const events: AgentEvent[] = [];
+
+    log('[%s:%d] Resolving %d aborted tools', operationId, stepIndex, toolsCalling.length);
+
+    // 发布工具取消事件
+    await streamManager.publishStreamEvent(operationId, {
+      data: {
+        parentMessageId,
+        phase: 'tools_aborted',
+        toolsCalling,
+      },
+      stepIndex,
+      type: 'step_start',
+    });
+
+    const newState = structuredClone(state);
+
+    // 为每个取消的工具调用创建 tool message
+    for (const toolPayload of toolsCalling) {
+      const toolName = `${toolPayload.identifier}/${toolPayload.apiName}`;
+      log('[%s:%d] Creating aborted tool message for %s', operationId, stepIndex, toolName);
+
+      try {
+        const toolMessage = await ctx.messageModel.create({
+          agentId: state.metadata!.agentId!,
+          content: 'Tool execution was aborted by user.',
+          parentId: parentMessageId,
+          plugin: toolPayload as any,
+          pluginIntervention: { status: 'aborted' },
+          role: 'tool',
+          threadId: state.metadata?.threadId,
+          tool_call_id: toolPayload.id,
+          topicId: state.metadata?.topicId,
+        });
+
+        log(
+          '[%s:%d] Created aborted tool message: %s for %s',
+          operationId,
+          stepIndex,
+          toolMessage.id,
+          toolName,
+        );
+
+        // 更新 state messages
+        newState.messages.push({
+          content: 'Tool execution was aborted by user.',
+          role: 'tool',
+          tool_call_id: toolPayload.id,
+        });
+      } catch (error) {
+        console.error(
+          '[resolve_aborted_tools] Failed to create aborted tool message for %s: %O',
+          toolName,
+          error,
+        );
+      }
+    }
+
+    log('[%s:%d] All aborted tool messages created', operationId, stepIndex);
+
+    // 标记状态为完成
+    newState.lastModified = new Date().toISOString();
+    newState.status = 'done';
+
+    // 发布完成事件
+    await streamManager.publishStreamEvent(operationId, {
+      data: {
+        finalState: newState,
+        phase: 'execution_complete',
+        reason: 'user_aborted',
+        reasonDetail: 'User aborted operation with pending tool calls',
+      },
+      stepIndex,
+      type: 'step_complete',
+    });
+
+    events.push({
+      finalState: newState,
+      reason: 'user_aborted',
+      reasonDetail: 'User aborted operation with pending tool calls',
+      type: 'done',
+    });
+
+    return { events, newState };
   },
 });
