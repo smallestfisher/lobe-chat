@@ -8,12 +8,12 @@ import {
 import { ElectronIPCEventHandler, ElectronIPCServer } from '@lobechat/electron-server-ipc';
 import { app, ipcMain, session } from 'electron';
 import { macOS, windows } from 'electron-is';
-import { pathExistsSync, remove } from 'fs-extra';
+import { pathExistsSync } from 'fs-extra';
 import os from 'node:os';
 import { extname, join } from 'node:path';
 
 import { name } from '@/../../package.json';
-import { LOCAL_DATABASE_DIR, buildDir, nextExportDir } from '@/const/dir';
+import { buildDir, nextExportDir } from '@/const/dir';
 import { isDev } from '@/const/env';
 import { IControlModule } from '@/controllers';
 import { IServiceModule } from '@/services';
@@ -159,9 +159,6 @@ export class App {
     }
 
     this.initDevBranding();
-
-    // Clean up stale database lock file before starting IPC server
-    await this.cleanupDatabaseLock();
 
     //  ==============
     await this.ipcServer.start();
@@ -355,27 +352,6 @@ export class App {
     app.setName('lobehub-desktop-dev');
     if (macOS()) {
       app.dock!.setIcon(join(buildDir, 'icon-dev.png'));
-    }
-  };
-
-  /**
-   * Clean up stale database lock file from previous crashes or abnormal exits
-   */
-  private cleanupDatabaseLock = async () => {
-    try {
-      const dbPath = join(this.appStoragePath, LOCAL_DATABASE_DIR);
-      const lockPath = `${dbPath}.lock`;
-
-      if (pathExistsSync(lockPath)) {
-        logger.info(`Cleaning up stale database lock file: ${lockPath}`);
-        await remove(lockPath);
-        logger.info('Database lock file removed successfully');
-      } else {
-        logger.debug('No database lock file found, skipping cleanup');
-      }
-    } catch (error) {
-      logger.error('Failed to cleanup database lock file:', error);
-      // Non-fatal error, allow application to continue
     }
   };
 
