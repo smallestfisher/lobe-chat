@@ -16,25 +16,32 @@ const Home = memo(() => {
   const { t } = useTranslation('memory');
 
   const useFetchTags = useUserMemoryStore((s) => s.useFetchTags);
-  const { data, isLoading } = useFetchTags();
+  const roles = useUserMemoryStore((s) => s.roles);
+  const { isLoading } = useFetchTags();
 
   if (isLoading) return <Loading debugId={'Home'} />;
 
-  if (!data || data.length === 0) {
+  if (!roles || roles.length === 0) {
     return <Empty description={t('identity.empty')} />;
   }
 
   return (
     <Flexbox flex={1} height={'100%'}>
-      <NavHeader right={<WideScreenButton />} />
+      <NavHeader
+        right={<WideScreenButton />}
+        style={{
+          zIndex: 1,
+        }}
+      />
       <Flexbox
         height={'100%'}
         id={SCROLL_PARENT_ID}
         style={{ overflowY: 'auto', paddingBottom: '16vh' }}
         width={'100%'}
       >
+        <RoleTagCloud tags={roles} />
         <WideScreenContainer gap={32} paddingBlock={48}>
-          <RoleTagCloud tags={data} />
+          111
         </WideScreenContainer>
       </Flexbox>
     </Flexbox>

@@ -4,6 +4,8 @@ import {
   MergeStrategyEnum,
   RelationshipEnum,
   TypesEnum,
+  UserMemoryContextObjectType,
+  UserMemoryContextSubjectType,
   UserMemoryContextWithoutVectors,
   UserMemoryExperienceWithoutVectors,
   UserMemoryIdentityWithoutVectors,
@@ -26,6 +28,7 @@ import {
   userMemoriesPreferences,
 } from '../../schemas';
 import { LobeChatDatabase } from '../../type';
+import { AssociatedObjectSchema } from '@lobechat/memory-user-memory';
 
 const normalizeRelationshipValue = (input: unknown): RelationshipEnum | null => {
   if (input === null) return null;
@@ -194,8 +197,8 @@ export interface UpdateIdentityEntryParams {
 }
 
 export interface ContextEntryPayload {
-  associatedObjects?: Record<string, unknown>[] | null;
-  associatedSubjects?: Record<string, unknown>[] | null;
+  associatedObjects?: { extra?: Record<string, unknown>, name?: string, type?: UserMemoryContextObjectType }[] | null;
+  associatedSubjects?: { extra?: Record<string, unknown>, name?: string, type?: UserMemoryContextSubjectType }[] | null;
   currentStatus?: string | null;
   description?: string | null;
   descriptionVector?: number[] | null;
@@ -258,39 +261,49 @@ export interface QueryTagsResult {
   tag: string;
 }
 
+export interface QueryIdentityRolesParams {
+  page?: number;
+  size?: number;
+}
+
+export interface QueryIdentityRolesResult {
+  roles: Array<{ count: number; role: string }>;
+  tags: Array<{ count: number; tag: string }>;
+}
+
 export class UserMemoryModel {
-  static normalizeAssociations(value?: unknown): Record<string, unknown>[] | null {
-    if (!Array.isArray(value)) return null;
+  static parseAssociatedObjects(value?: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
 
     const associations: Record<string, unknown>[] = [];
 
     value.forEach((item) => {
-      if (!item) return;
-
-      if (typeof item === 'object' && !Array.isArray(item)) {
-        associations.push(item as Record<string, unknown>);
-        return;
-      }
-
-      if (typeof item === 'string') {
-        const trimmed = item.trim();
-        if (!trimmed) return;
-
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            associations.push(parsed as Record<string, unknown>);
-            return;
-          }
-        } catch {
-          // fall through to store raw value
-        }
-
-        associations.push({ value: trimmed });
+      const parsed = AssociatedObjectSchema.safeParse(item)
+      if (parsed.success) {
+        const extra = JSON.parse(parsed.data.extra || '{}');
+        parsed.data.extra = extra;
+        associations.push(parsed.data);
       }
     });
 
-    return associations.length > 0 ? associations : null;
+    return associations.length > 0 ? associations : [];
+  }
+
+  static parseAssociatedSubjects(value?: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+
+    const associations: Record<string, unknown>[] = [];
+
+    value.forEach((item) => {
+      const parsed = AssociatedObjectSchema.safeParse(item)
+      if (parsed.success) {
+        const extra = JSON.parse(parsed.data.extra || '{}');
+        parsed.data.extra = extra;
+        associations.push(parsed.data);
+      }
+    });
+
+    return associations.length > 0 ? associations : [];
   }
 
   static parseDateFromString(value?: string | Date | null): Date | null {
@@ -544,6 +557,61 @@ export class UserMemoryModel {
       .offset(offset);
 
     return result as QueryTagsResult[];
+  };
+
+  queryIdentityRoles = async (
+    params: QueryIdentityRolesParams = {},
+  ): Promise<QueryIdentityRolesResult> => {
+    const { page = 1, size = 10 } = params;
+    const offset = (page - 1) * size;
+
+    const identityConditions = [eq(userMemoriesIdentities.userId, this.userId)];
+
+    const identityTags = this.db.$with('identity_tags').as(
+      this.db
+        .select({
+          tag: sql<string>`UNNEST(${userMemoriesIdentities.tags})`.as('tag'),
+        })
+        .from(userMemoriesIdentities)
+        .where(and(...identityConditions)),
+    );
+
+    const [tags, roles] = await Promise.all([
+      this.db
+        .with(identityTags)
+        .select({
+          count: sql<number>`COUNT(${identityTags.tag})::int`.as('count'),
+          tag: identityTags.tag,
+        })
+        .from(identityTags)
+        .where(and(isNotNull(identityTags.tag), ne(identityTags.tag, '')))
+        .groupBy(identityTags.tag)
+        .orderBy(desc(sql<number>`count`))
+        .limit(size)
+        .offset(offset),
+      this.db
+        .select({
+          count: sql<number>`COUNT(${userMemoriesIdentities.role})::int`.as('count'),
+          role: userMemoriesIdentities.role,
+        })
+        .from(userMemoriesIdentities)
+        .where(
+          and(
+            ...identityConditions,
+            isNotNull(userMemoriesIdentities.role),
+            ne(userMemoriesIdentities.role, ''),
+          ),
+        )
+        .groupBy(userMemoriesIdentities.role)
+        .orderBy(desc(sql<number>`count`))
+        .limit(size)
+        .offset(offset),
+    ]);
+
+    return {
+      roles: roles as QueryIdentityRolesResult['roles'],
+      tags: tags as QueryIdentityRolesResult['tags'],
+    };
   };
 
   findById = async (id: string): Promise<UserMemoryItem | undefined> => {
@@ -1012,7 +1080,8 @@ export class UserMemoryModel {
       query = query.orderBy(desc(userMemoriesContexts.createdAt));
     }
 
-    return query.limit(limit);
+    const res = await query.limit(limit) as UserMemoryContextWithoutVectors[];
+    return res
   };
 
   searchExperiences = async (params: {

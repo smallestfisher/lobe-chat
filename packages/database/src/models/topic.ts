@@ -11,11 +11,12 @@ import {
   inArray,
   isNull,
   lte,
+  ne,
   or,
   sql,
 } from 'drizzle-orm';
 
-import { TopicItem, agents, agentsToSessions, messages, topics } from '../schemas';
+import { TopicItem, agentsToSessions, messages, topics } from '../schemas';
 import { LobeChatDatabase } from '../type';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../utils/genWhere';
 import { idGenerator } from '../utils/idGenerator';
@@ -31,15 +32,22 @@ export interface CreateTopicParams {
 
 interface QueryTopicParams {
   agentId?: string | null;
-  containerId?: string | null; // sessionId or groupId
+  /**
+   * @deprecated Use agentId or groupId instead. Kept for backward compatibility.
+   * Container ID (sessionId or groupId) to filter topics by
+   */
+  containerId?: string | null;
   current?: number;
+  /**
+   * Group ID to filter topics by
+   */
+  groupId?: string | null;
   /**
    * Whether this is an inbox agent query.
    * When true, also includes legacy inbox topics (sessionId IS NULL AND groupId IS NULL AND agentId IS NULL)
    */
   isInbox?: boolean;
   pageSize?: number;
-  sessionId?: string | null;
 }
 
 export interface ListTopicsForMemoryExtractorCursor {
@@ -59,12 +67,42 @@ export class TopicModel {
 
   query = async ({
     agentId,
+    containerId,
     current = 0,
     pageSize = 9999,
-    containerId,
+    groupId,
     isInbox,
   }: QueryTopicParams = {}) => {
     const offset = current * pageSize;
+
+    // If groupId is provided, query topics by groupId directly
+    if (groupId) {
+      const whereCondition = and(eq(topics.userId, this.userId), eq(topics.groupId, groupId));
+
+      const [items, totalResult] = await Promise.all([
+        this.db
+          .select({
+            createdAt: topics.createdAt,
+            favorite: topics.favorite,
+            historySummary: topics.historySummary,
+            id: topics.id,
+            metadata: topics.metadata,
+            title: topics.title,
+            updatedAt: topics.updatedAt,
+          })
+          .from(topics)
+          .where(whereCondition)
+          .orderBy(desc(topics.favorite), desc(topics.updatedAt))
+          .limit(pageSize)
+          .offset(offset),
+        this.db
+          .select({ count: count(topics.id) })
+          .from(topics)
+          .where(whereCondition),
+      ]);
+
+      return { items, total: totalResult[0].count };
+    }
 
     // If agentId is provided, query topics that match either:
     // 1. topics.agentId = agentId (new data with agentId stored directly)
@@ -121,7 +159,7 @@ export class TopicModel {
       return { items, total: totalResult[0].count };
     }
 
-    // Fallback to containerId-based query (original behavior)
+    // Fallback to containerId-based query (backward compatibility)
     const whereCondition = and(eq(topics.userId, this.userId), this.matchContainer(containerId));
 
     const [items, totalResult] = await Promise.all([
@@ -303,23 +341,19 @@ export class TopicModel {
   };
 
   /**
-   * Query recent topics with agent info for homepage display
+   * Query recent topics for homepage display.
+   * Returns basic topic info with agentId and sessionId for later resolution.
    */
   queryRecent = async (limit: number = 12) => {
     return this.db
       .select({
-        agent: {
-          avatar: agents.avatar,
-          backgroundColor: agents.backgroundColor,
-          id: agents.id,
-          title: agents.title,
-        },
+        agentId: topics.agentId,
         id: topics.id,
+        sessionId: topics.sessionId,
         title: topics.title,
         updatedAt: topics.updatedAt,
       })
       .from(topics)
-      .leftJoin(agents, eq(topics.agentId, agents.id))
       .where(eq(topics.userId, this.userId))
       .orderBy(desc(topics.updatedAt))
       .limit(limit);
@@ -544,9 +578,12 @@ export class TopicModel {
     } = {},
   ) => {
     const cursorCondition = options.cursor
-      ? or(
-          gt(topics.createdAt, options.cursor.createdAt),
-          and(eq(topics.createdAt, options.cursor.createdAt), gt(topics.id, options.cursor.id)),
+      ? and(
+          ne(topics.id, options.cursor.id),
+          or(
+            gt(topics.createdAt, options.cursor.createdAt),
+            and(eq(topics.createdAt, options.cursor.createdAt), gt(topics.id, options.cursor.id)),
+          ),
         )
       : undefined;
 

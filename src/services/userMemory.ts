@@ -1,45 +1,53 @@
+import type {
+  AddIdentityActionSchema,
+  ContextMemoryItemSchema,
+  ExperienceMemoryItemSchema,
+  PreferenceMemoryItemSchema,
+  RemoveIdentityActionSchema,
+  UpdateIdentityActionSchema,
+} from '@lobechat/memory-user-memory/schemas';
+import { z } from 'zod';
+
 import { lambdaClient } from '@/libs/trpc/client';
 import {
-  AddContextMemoryParams,
   AddContextMemoryResult,
-  AddExperienceMemoryParams,
   AddExperienceMemoryResult,
-  AddIdentityMemoryParams,
   AddIdentityMemoryResult,
-  AddPreferenceMemoryParams,
   AddPreferenceMemoryResult,
   LayersEnum,
-  RemoveIdentityMemoryParams,
   RemoveIdentityMemoryResult,
   SearchMemoryParams,
   SearchMemoryResult,
-  UpdateIdentityMemoryParams,
   UpdateIdentityMemoryResult,
 } from '@/types/userMemory';
 
 class UserMemoryService {
-  addContextMemory = async (params: AddContextMemoryParams): Promise<AddContextMemoryResult> => {
+  addContextMemory = async (
+    params: z.infer<typeof ContextMemoryItemSchema>,
+  ): Promise<AddContextMemoryResult> => {
     return lambdaClient.userMemories.toolAddContextMemory.mutate(params);
   };
 
   addExperienceMemory = async (
-    params: AddExperienceMemoryParams,
+    params: z.infer<typeof ExperienceMemoryItemSchema>,
   ): Promise<AddExperienceMemoryResult> => {
     return lambdaClient.userMemories.toolAddExperienceMemory.mutate(params);
   };
 
-  addIdentityMemory = async (params: AddIdentityMemoryParams): Promise<AddIdentityMemoryResult> => {
+  addIdentityMemory = async (
+    params: z.infer<typeof AddIdentityActionSchema>,
+  ): Promise<AddIdentityMemoryResult> => {
     return lambdaClient.userMemories.toolAddIdentityMemory.mutate(params);
   };
 
   addPreferenceMemory = async (
-    params: AddPreferenceMemoryParams,
+    params: z.infer<typeof PreferenceMemoryItemSchema>,
   ): Promise<AddPreferenceMemoryResult> => {
     return lambdaClient.userMemories.toolAddPreferenceMemory.mutate(params);
   };
 
   removeIdentityMemory = async (
-    params: RemoveIdentityMemoryParams,
+    params: z.infer<typeof RemoveIdentityActionSchema>,
   ): Promise<RemoveIdentityMemoryResult> => {
     return lambdaClient.userMemories.toolRemoveIdentityMemory.mutate(params);
   };
@@ -56,8 +64,12 @@ class UserMemoryService {
     return lambdaClient.userMemories.queryTags.query(params);
   };
 
+  queryIdentityRoles = async (params?: { page?: number; size?: number }) => {
+    return lambdaClient.userMemories.queryIdentityRoles.query(params);
+  };
+
   updateIdentityMemory = async (
-    params: UpdateIdentityMemoryParams,
+    params: z.infer<typeof UpdateIdentityActionSchema>,
   ): Promise<UpdateIdentityMemoryResult> => {
     return lambdaClient.userMemories.toolUpdateIdentityMemory.mutate(params);
   };

@@ -8,6 +8,7 @@ import { ErrorBoundary, dynamicElement } from '@/utils/router';
 
 import DesktopMainLayout from '../(main)/_layout';
 import DesktopChatLayout from '../(main)/chat/_layout';
+import DesktopGroupLayout from '../(main)/group/_layout';
 import DesktopHome from '../(main)/home';
 import DesktopHomeLayout from '../(main)/home/_layout';
 import DesktopImageLayout from '../(main)/image/_layout';
@@ -70,11 +71,18 @@ export const createDesktopRouter = () => {
             {
               children: [
                 {
-                  element: dynamicElement(() => import('../(main)/chat'), 'Desktop > Group Chat'),
+                  element: dynamicElement(() => import('../(main)/group'), 'Desktop > Agent Group'),
                   index: true,
                 },
+                {
+                  element: dynamicElement(
+                    () => import('../(main)/group/profile'),
+                    'Desktop > Agent Group > Profile',
+                  ),
+                  path: 'profile',
+                },
               ],
-              element: <DesktopChatLayout />,
+              element: <DesktopGroupLayout />,
               errorElement: <ErrorBoundary resetPath="/group" />,
               loader: groupIdLoader,
               path: ':gid',
@@ -205,6 +213,17 @@ export const createDesktopRouter = () => {
                   ),
                   loader: slugLoader,
                   path: 'mcp/:slug',
+                },
+                {
+                  element: dynamicElement(
+                    () =>
+                      import('../(main)/discover/(detail)/user').then(
+                        (m) => m.DesktopUserDetailPage,
+                      ),
+                    'Desktop > Discover > Detail > User',
+                  ),
+                  loader: slugLoader,
+                  path: 'user/:slug',
                 },
               ],
               element: dynamicElement(

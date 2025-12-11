@@ -38,6 +38,8 @@ export const config = {
     '/labs',
     '/agent',
     '/agent(.*)',
+    '/group',
+    '/group(.*)',
     '/changelog(.*)',
     '/settings(.*)',
     '/image',
@@ -140,10 +142,10 @@ const defaultMiddleware = (request: NextRequest) => {
   const spaRoutes = [
     '/chat',
     '/agent',
+    '/group',
     '/discover',
     '/resource',
     '/page',
-    '/group',
     '/settings',
     '/image',
     '/labs',
@@ -208,6 +210,7 @@ const isPublicRoute = createRouteMatcher([
   '/api/auth(.*)',
   '/api/webhooks(.*)',
   '/api/workflows(.*)',
+  '/api/agent(.*)',
   '/webapi(.*)',
   '/trpc(.*)',
   // next auth

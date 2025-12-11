@@ -168,26 +168,23 @@ function generateRandomCreateUserMemoryPreferenceParams() {
 }
 
 describe('UserMemoryModel', () => {
-  describe('normalizeAssociations', () => {
+  describe('parseAssociatedObjects', () => {
     it('returns null when input is not an array or contains no valid items', () => {
-      expect(UserMemoryModel.normalizeAssociations(undefined)).toBeNull();
-      expect(UserMemoryModel.normalizeAssociations('not-array')).toBeNull();
-      expect(UserMemoryModel.normalizeAssociations([null, undefined, '', '   ', 0])).toBeNull();
+      expect(UserMemoryModel.parseAssociatedObjects(undefined)).toHaveLength(0);
+      expect(UserMemoryModel.parseAssociatedObjects('not-array')).toHaveLength(0);
+      expect(UserMemoryModel.parseAssociatedObjects([null, undefined, '', '   ', 0])).toHaveLength(0);
     });
 
-    it('normalizes objects, JSON strings, and raw strings', () => {
-      const result = UserMemoryModel.normalizeAssociations([
-        { id: 1, name: 'object' },
-        ' { "id": 2, "name": "json" } ',
+    it('normalizes objects', () => {
+      const result = UserMemoryModel.parseAssociatedObjects([
+        { name: 'object' },
+        ' { "name": "json" } ',
         'raw',
         { another: true },
       ]);
 
       expect(result).toEqual([
-        { id: 1, name: 'object' },
-        { id: 2, name: 'json' },
-        { value: 'raw' },
-        { another: true },
+        { name: 'object' },
       ]);
     });
   });
@@ -740,6 +737,44 @@ describe('UserMemoryModel', () => {
       expect(contexts[1]?.id).toBe(oldContextId);
       contexts.forEach((context) => {
         expect(context.type).toBe('target');
+      });
+    });
+  });
+
+  describe('queryIdentityRoles', () => {
+    it('aggregates identity tags and roles for the current user only', async () => {
+      const now = new Date('2024-04-02T00:00:00.000Z');
+      const anotherUserModel = new UserMemoryModel(serverDB, userId2);
+
+      await userMemoryModel.addIdentityEntry({
+        base: { lastAccessedAt: now, tags: [] },
+        identity: { role: 'engineer', tags: ['alpha', 'beta'] },
+      });
+      await userMemoryModel.addIdentityEntry({
+        base: { lastAccessedAt: now, tags: [] },
+        identity: { role: 'engineer', tags: ['alpha'] },
+      });
+      await userMemoryModel.addIdentityEntry({
+        base: { lastAccessedAt: now, tags: [] },
+        identity: { role: 'manager', tags: [] },
+      });
+
+      await anotherUserModel.addIdentityEntry({
+        base: { lastAccessedAt: now, tags: [] },
+        identity: { role: 'engineer', tags: ['alpha'] },
+      });
+
+      const result = await userMemoryModel.queryIdentityRoles({ size: 5 });
+
+      expect(result).toEqual({
+        roles: [
+          { count: 2, role: 'engineer' },
+          { count: 1, role: 'manager' },
+        ],
+        tags: [
+          { count: 2, tag: 'alpha' },
+          { count: 1, tag: 'beta' },
+        ],
       });
     });
   });

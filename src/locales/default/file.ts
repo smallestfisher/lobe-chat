@@ -1,6 +1,6 @@
 export default {
   addFolder: '创建文件夹',
-  addLibrary: '添加到资源库',
+  addLibrary: '添加',
   addPage: '创建文稿',
   desc: '管理你的工作、学习与生活资源。',
   detail: {
@@ -77,6 +77,9 @@ export default {
   header: {
     actions: {
       connect: '连接...',
+      builtInBlockList: {
+        filtered: '已过滤 {{ignored}} 个文件（共 {{total}} 个文件）',
+      },
       gitignore: {
         apply: '应用规则',
         cancel: '忽略规则',
