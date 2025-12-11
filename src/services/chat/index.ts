@@ -43,7 +43,6 @@ import { AGENT_BUILDER_TOOL_ID } from '@/tools/agent-builder/const';
 import { PAGE_AGENT_TOOL_ID } from '@/tools/document/const';
 import { MemoryManifest } from '@/tools/memory';
 import type { ChatStreamPayload, OpenAIChatMessage } from '@/types/openai/chat';
-import { fetchWithInvokeStream } from '@/utils/electron/desktopRemoteRPCFetch';
 import { createErrorResponse } from '@/utils/errorResponse';
 import { createTraceHeader, getTraceId } from '@/utils/trace';
 
@@ -111,7 +110,11 @@ class ChatService {
 
     // Resolve agent config with builtin agent runtime config merged
     // plugins is already merged (runtime plugins > agent config plugins)
-    const { agentConfig, chatConfig, plugins: pluginIds } = resolveAgentConfig({
+    const {
+      agentConfig,
+      chatConfig,
+      plugins: pluginIds,
+    } = resolveAgentConfig({
       agentId: targetAgentId,
       model: payload.model,
       plugins: enabledPlugins,
@@ -371,10 +374,7 @@ class ChatService {
 
     let fetcher: typeof fetch | undefined = undefined;
 
-    // Add desktop remote RPC fetch support
-    if (isDesktop) {
-      fetcher = fetchWithInvokeStream;
-    } else if (enableFetchOnClient) {
+    if (enableFetchOnClient) {
       /**
        * Notes:
        * 1. Browser agent runtime will skip auth check if a key and endpoint provided by
