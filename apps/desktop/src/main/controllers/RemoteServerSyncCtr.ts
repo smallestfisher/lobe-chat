@@ -11,7 +11,7 @@ import { defaultProxySettings } from '@/const/store';
 import { createLogger } from '@/utils/logger';
 
 import RemoteServerConfigCtr from './RemoteServerConfigCtr';
-import { ControllerModule, ipcClientEvent } from './index';
+import { ControllerModule } from './index';
 
 // Create logger
 const logger = createLogger('controllers:RemoteServerSyncCtr');
@@ -169,7 +169,7 @@ export default class RemoteServerSyncCtr extends ControllerModule {
     });
 
     if (requestBody) {
-      clientReq.write(Buffer.from(requestBody));
+      clientReq.write(Buffer.from(requestBody as string));
     }
 
     clientReq.end();
@@ -218,39 +218,5 @@ export default class RemoteServerSyncCtr extends ControllerModule {
 
     const requester = url.protocol === 'https:' ? https : http;
     return { requestOptions, requester };
-  }
-
-  /**
-   * Attempts to refresh the access token by calling the RemoteServerConfigCtr.
-   * @returns Whether token refresh was successful
-   */
-  private async refreshTokenIfNeeded(callerLogPrefix: string = '[RefreshToken]'): Promise<boolean> {
-    // Added prefix parameter
-    const logPrefix = `${callerLogPrefix} [RefreshTrigger]`; // Updated prefix
-    logger.debug(`${logPrefix} Entered refreshTokenIfNeeded.`);
-
-    try {
-      logger.info(`${logPrefix} Triggering refreshAccessToken in RemoteServerConfigCtr.`);
-      const result = await this.remoteServerConfigCtr.refreshAccessToken();
-
-      if (result.success) {
-        logger.info(`${logPrefix} refreshAccessToken call completed successfully.`);
-        return true;
-      } else {
-        logger.error(`${logPrefix} refreshAccessToken call failed: ${result.error}`);
-        return false;
-      }
-    } catch (error) {
-      logger.error(`${logPrefix} Exception occurred while calling refreshAccessToken:`, error);
-      return false;
-    }
-  }
-
-  /**
-   * Clean up resources - No protocol handler to unregister anymore
-   */
-  destroy() {
-    logger.info('Destroying RemoteServerSyncCtr');
-    // Nothing specific to clean up here regarding request handling now
   }
 }
