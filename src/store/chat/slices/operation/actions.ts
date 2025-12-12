@@ -98,6 +98,7 @@ export interface OperationActions {
     description?: string;
     label?: string;
     metadata?: Partial<OperationMetadata>;
+    operationId?: string;
     parentOperationId?: string;
     type: OperationType;
   }) => { abortController: AbortController; operationId: string };
@@ -138,29 +139,31 @@ export const operationActions: StateCreator<
         );
         throw new Error(`Operation not found: ${context.operationId}`);
       }
-      const { agentId, topicId, threadId, scope, isNew } = operation.context;
+      const { agentId, topicId, threadId, scope, isNew, groupId } = operation.context;
       log(
-        '[internal_getConversationContext] get from operation %s: agentId=%s, topicId=%s, threadId=%s, scope=%s',
+        '[internal_getConversationContext] get from operation %s: agentId=%s, topicId=%s, threadId=%s, scope=%s, groupId=%s',
         context.operationId,
         agentId,
         topicId,
         threadId,
         scope,
+        groupId,
       );
-      return { agentId: agentId!, topicId, threadId, scope, isNew };
+      return { agentId: agentId!, topicId, threadId, scope, isNew, groupId };
     }
 
     // Fallback to global state
     const agentId = get().activeAgentId;
+    const groupId = get().activeGroupId;
     const topicId = get().activeTopicId;
     const threadId = get().activeThreadId;
-    log(
-      '[internal_getConversationContext] use global state: agentId=%s, topicId=%s, threadId=%s',
+    log('[internal_getConversationContext] use global state: ', {
       agentId,
       topicId,
       threadId,
-    );
-    return { agentId, topicId, threadId };
+      groupId,
+    });
+    return { agentId, topicId, threadId, groupId };
   },
 
   startOperation: (params) => {
@@ -171,9 +174,10 @@ export const operationActions: StateCreator<
       label,
       description,
       metadata,
+      operationId: customOperationId,
     } = params;
 
-    const operationId = `op_${nanoid()}`;
+    const operationId = customOperationId || `op_${nanoid()}`;
 
     // If parent operation exists and context is not fully provided, inherit from parent
     let context: OperationContext = partialContext || {};
@@ -235,6 +239,7 @@ export const operationActions: StateCreator<
         if (context.agentId) {
           const contextKey = messageMapKey({
             agentId: context.agentId,
+            groupId: context.groupId,
             topicId: context.topicId !== undefined ? context.topicId : null,
           });
           if (!state.operationsByContext[contextKey]) {
@@ -609,6 +614,7 @@ export const operationActions: StateCreator<
           if (op.context.agentId) {
             const contextKey = messageMapKey({
               agentId: op.context.agentId,
+              groupId: op.context.groupId,
               topicId: op.context.topicId !== undefined ? op.context.topicId : null,
             });
             const contextIndex = state.operationsByContext[contextKey];

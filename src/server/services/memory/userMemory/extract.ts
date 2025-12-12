@@ -26,6 +26,7 @@ import {
   processedSourceCounter,
   tracer,
 } from '@lobechat/observability-otel/modules/memory-user-memory';
+import { attributesCommon } from '@lobechat/observability-otel/node';
 import { Client } from '@upstash/workflow';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { join } from 'pathe';
@@ -51,7 +52,7 @@ import { S3 } from '@/server/modules/S3';
 import type { GlobalMemoryLayer } from '@/types/serverConfig';
 import type { UserKeyVaults } from '@/types/user/settings';
 import { LayersEnum, MergeStrategyEnum, TypesEnum } from '@/types/userMemory';
-import { attributesCommon } from '@lobechat/observability-otel/node';
+import { encodeAsync } from '@/utils/tokenizer';
 
 const SOURCE_ALIAS_MAP: Record<string, MemoryExtractionSourceType> = {
   chatTopic: 'chat_topic',
@@ -297,6 +298,7 @@ export class MemoryExtractionExecutor {
     layerModels: Partial<Record<LayersEnum, string>>;
     observabilityS3: MemoryExtractionConfig['observabilityS3'];
   };
+  private readonly embeddingContextLimit?: number;
 
   private readonly runtimeCache = new Map<string, RuntimeBundle>();
   private readonly db = getServerDB();
@@ -320,6 +322,9 @@ export class MemoryExtractionExecutor {
       ),
       observabilityS3: privateConfig.observabilityS3,
     };
+
+    this.embeddingContextLimit =
+      privateConfig.embedding?.contextLimit ?? privateConfig.agentLayerExtractor.contextLimit;
   }
 
   static async create() {
@@ -346,25 +351,88 @@ export class MemoryExtractionExecutor {
     };
   }
 
+  private async countTokens(text: string) {
+    const normalized = text.trim();
+    if (!normalized) return 0;
+
+    return await encodeAsync(normalized);
+  }
+
+  private trimTextToTokenLimit(text: string, tokenLimit?: number) {
+    if (!tokenLimit || tokenLimit <= 0) return text;
+
+    const tokens = text.split(/\s+/);
+    if (tokens.length <= tokenLimit) return text;
+
+    return tokens.slice(Math.max(tokens.length - tokenLimit, 0)).join(' ');
+  }
+
+  private async trimConversationsToTokenLimit<T extends OpenAIChatMessage>(
+    conversations: (T & { createdAt: Date })[],
+    tokenLimit?: number,
+  ) {
+    if (!tokenLimit || tokenLimit <= 0) return conversations;
+
+    let remaining = tokenLimit;
+    const trimmed: (T & { createdAt: Date })[] = [];
+
+    for (let i = conversations.length - 1; i >= 0 && remaining > 0; i -= 1) {
+      const conversation = conversations[i];
+      // TODO: we might need to think about how to deal with non-string contents
+      // as multi-modal models become more prevalent
+      const content =
+        typeof conversation.content === 'string'
+          ? conversation.content
+          : JSON.stringify(conversation.content);
+
+      const tokenCount = await this.countTokens(content);
+      if (tokenCount <= remaining) {
+        trimmed.push(conversation);
+        remaining -= tokenCount;
+        continue;
+      }
+
+      const trimmedContent =
+        typeof conversation.content === 'string'
+          ? this.trimTextToTokenLimit(conversation.content, remaining)
+          : conversation.content;
+
+      if (trimmedContent && remaining > 0) {
+        trimmed.push({ ...conversation, content: trimmedContent });
+      }
+
+      break;
+    }
+
+    return trimmed.reverse();
+  }
+
   private async generateEmbeddings(
     runtimes: ModelRuntime,
     model: string,
     texts: Array<string | undefined | null>,
+    tokenLimit?: number,
   ) {
     const requests = texts
-      .map((text, index) => ({ index, text }))
-      .filter(
-        (item): item is { index: number; text: string } =>
-          typeof item.text === 'string' && item.text.trim().length > 0,
-      );
+      .map((text, index) => {
+        if (typeof text !== 'string') return null;
 
-    if (requests.length === 0) return texts.map(() => null);
+        const trimmed = this.trimTextToTokenLimit(text, tokenLimit);
+        if (!trimmed.trim()) return null;
+
+        return { index, text: trimmed };
+      })
+      .filter(Boolean);
+
+    if (requests.length === 0) {
+      return texts.map(() => null);
+    }
 
     try {
       const response = await runtimes.embeddings(
         {
           dimensions: DEFAULT_USER_MEMORY_EMBEDDING_DIMENSIONS,
-          input: requests.map((item) => item.text),
+          input: requests.map((item) => item!.text),
           model,
         },
         { user: 'memory-extraction' },
@@ -387,19 +455,21 @@ export class MemoryExtractionExecutor {
   async persistContextMemories(
     job: MemoryExtractionJob,
     messageIds: string[],
-    result: NonNullable<MemoryExtractionResult['outputs']['context']>,
+    result: NonNullable<MemoryExtractionResult['outputs']['context']>['data'],
     runtime: ModelRuntime,
     model: string,
+    tokenLimit: number | undefined,
     db: Awaited<ReturnType<typeof getServerDB>>,
   ) {
     const insertedIds: string[] = [];
     const userMemoryModel = new UserMemoryModel(db, job.userId);
 
-    for (const item of result.memories ?? []) {
+    for (const item of result?.memories ?? []) {
       const [summaryVector, detailsVector, descriptionVector] = await this.generateEmbeddings(
         runtime,
         model,
         [item.summary, item.details, item.withContext?.description],
+        tokenLimit,
       );
       const baseMetadata = this.buildBaseMetadata(
         job,
@@ -445,23 +515,29 @@ export class MemoryExtractionExecutor {
   async persistExperienceMemories(
     job: MemoryExtractionJob,
     messageIds: string[],
-    result: NonNullable<MemoryExtractionResult['outputs']['experience']>,
+    result: NonNullable<MemoryExtractionResult['outputs']['experience']>['data'],
     runtime: ModelRuntime,
     model: string,
+    tokenLimit: number | undefined,
     db: Awaited<ReturnType<typeof getServerDB>>,
   ) {
     const insertedIds: string[] = [];
     const userMemoryModel = new UserMemoryModel(db, job.userId);
 
-    for (const item of result.memories ?? []) {
+    for (const item of result?.memories ?? []) {
       const [summaryVector, detailsVector, situationVector, actionVector, keyLearningVector] =
-        await this.generateEmbeddings(runtime, model, [
-          item.summary,
-          item.details,
-          item.withExperience?.situation,
-          item.withExperience?.action,
-          item.withExperience?.keyLearning,
-        ]);
+        await this.generateEmbeddings(
+          runtime,
+          model,
+          [
+            item.summary,
+            item.details,
+            item.withExperience?.situation,
+            item.withExperience?.action,
+            item.withExperience?.keyLearning,
+          ],
+          tokenLimit,
+        );
       const baseMetadata = this.buildBaseMetadata(
         job,
         messageIds,
@@ -503,19 +579,21 @@ export class MemoryExtractionExecutor {
   async persistPreferenceMemories(
     job: MemoryExtractionJob,
     messageIds: string[],
-    result: NonNullable<MemoryExtractionResult['outputs']['preference']>,
+    result: NonNullable<MemoryExtractionResult['outputs']['preference']>['data'],
     runtime: ModelRuntime,
     model: string,
+    tokenLimit: number | undefined,
     db: Awaited<ReturnType<typeof getServerDB>>,
   ) {
     const insertedIds: string[] = [];
     const userMemoryModel = new UserMemoryModel(db, job.userId);
 
-    for (const item of result.memories ?? []) {
+    for (const item of result?.memories ?? []) {
       const [summaryVector, detailsVector, directiveVector] = await this.generateEmbeddings(
         runtime,
         model,
         [item.summary, item.details, item.withPreference?.conclusionDirectives],
+        tokenLimit,
       );
       const baseMetadata = this.buildBaseMetadata(
         job,
@@ -556,9 +634,10 @@ export class MemoryExtractionExecutor {
   async persistIdentityMemories(
     job: MemoryExtractionJob,
     messageIds: string[],
-    result: NonNullable<MemoryExtractionResult['outputs']['identity']>,
+    result: NonNullable<MemoryExtractionResult['outputs']['identity']>['data'],
     runtime: ModelRuntime,
     model: string,
+    tokenLimit: number | undefined,
     db: Awaited<ReturnType<typeof getServerDB>>,
   ) {
     const insertedIds: string[] = [];
@@ -569,11 +648,12 @@ export class MemoryExtractionExecutor {
     const removeActions = result?.remove ?? [];
 
     for (const action of addActions) {
-      const [summaryVector, detailsVector, descriptionVector] = await this.generateEmbeddings(runtime, model, [
-        action.summary,
-        action.details,
-        action.withIdentity.description
-      ]);
+      const [summaryVector, detailsVector, descriptionVector] = await this.generateEmbeddings(
+        runtime,
+        model,
+        [action.summary, action.details, action.withIdentity.description],
+        tokenLimit,
+      );
       const metadata = this.buildBaseMetadata(
         job,
         messageIds,
@@ -610,7 +690,12 @@ export class MemoryExtractionExecutor {
       const { set } = action;
 
       const [summaryVector, detailsVector, descriptionVector] = set.withIdentity?.description
-        ? await this.generateEmbeddings(runtime, model, [set.summary, set.details, set.withIdentity.description])
+        ? await this.generateEmbeddings(
+            runtime,
+            model,
+            [set.summary, set.details, set.withIdentity.description],
+            tokenLimit,
+          )
         : [];
 
       await userMemoryModel.updateIdentityEntry({
@@ -628,7 +713,12 @@ export class MemoryExtractionExecutor {
           description: set.withIdentity?.description,
           descriptionVector: descriptionVector ?? undefined,
           metadata: set.withIdentity.extractedLabels
-            ? this.buildBaseMetadata(job, messageIds, LayersEnum.Identity, set.withIdentity.extractedLabels)
+            ? this.buildBaseMetadata(
+                job,
+                messageIds,
+                LayersEnum.Identity,
+                set.withIdentity.extractedLabels,
+              )
             : undefined,
           relationship: set.withIdentity.relationship ?? undefined,
           role: set.withIdentity.role ?? undefined,
@@ -684,14 +774,16 @@ export class MemoryExtractionExecutor {
     embeddingModel: string,
     userId: string,
     conversations: OpenAIChatMessage[],
+    tokenLimit?: number,
   ) {
     const db = await this.db;
     const userMemoryModel = new UserMemoryModel(db, userId);
     // TODO: make topK configurable
     const topK = 10;
-    const aggregatedContent = conversations
-      .map((msg) => `${msg.role.toUpperCase()}: ${msg.content}`)
-      .join('\n\n');
+    const aggregatedContent = this.trimTextToTokenLimit(
+      conversations.map((msg) => `${msg.role.toUpperCase()}: ${msg.content}`).join('\n\n'),
+      tokenLimit,
+    );
 
     const embeddings = await runtime.embeddings({
       dimensions: DEFAULT_USER_MEMORY_EMBEDDING_DIMENSIONS,
@@ -825,10 +917,21 @@ export class MemoryExtractionExecutor {
             };
           }
 
-          const messageIds = conversations.map((item) => item.id);
+          const extractorContextLimit = this.privateConfig.agentLayerExtractor.contextLimit;
+          const embeddingContextLimit = this.embeddingContextLimit ?? extractorContextLimit;
+          const extractorConversations = await this.trimConversationsToTokenLimit(
+            conversations,
+            extractorContextLimit,
+          );
+          const embeddingConversations = await this.trimConversationsToTokenLimit(
+            conversations,
+            embeddingContextLimit,
+          );
+
+          const messageIds = extractorConversations.map((item) => item.id);
 
           const topicContextProvider = new LobeChatTopicContextProvider({
-            conversations: conversations,
+            conversations: extractorConversations,
             topic: topic,
             topicId: topic.id,
           });
@@ -848,7 +951,8 @@ export class MemoryExtractionExecutor {
             runtimes.embeddings,
             this.modelConfig.embeddingsModel,
             job.userId,
-            conversations,
+            embeddingConversations,
+            embeddingContextLimit,
           );
           const retrievedMemoryContextProvider = new RetrievalUserMemoryContextProvider({
             retrievedMemories,
@@ -866,6 +970,14 @@ export class MemoryExtractionExecutor {
             });
           const retrievedIdentityContext =
             await retrievedMemoryIdentitiesContextProvider.buildContext(extractionJob);
+          const trimmedRetrievedContexts = [
+            topicContext.context,
+            retrievalMemoryContext.context,
+          ].map((context) => this.trimTextToTokenLimit(context, extractorContextLimit));
+          const trimmedRetrievedIdentitiesContext = this.trimTextToTokenLimit(
+            retrievedIdentityContext.context,
+            extractorContextLimit,
+          );
 
           const service = new MemoryExtractionService({
             config: this.modelConfig,
@@ -892,8 +1004,8 @@ export class MemoryExtractionExecutor {
             contextProvider: topicContextProvider,
             language: language,
             resultRecorder: resultRecorder,
-            retrievedContexts: [topicContext.context, retrievalMemoryContext.context],
-            retrievedIdentitiesContext: retrievedIdentityContext.context,
+            retrievedContexts: trimmedRetrievedContexts,
+            retrievedIdentitiesContext: trimmedRetrievedIdentitiesContext,
 
             sessionDate: topic.updatedAt.toISOString(),
             // TODO: make topK configurable
@@ -1156,6 +1268,11 @@ export class MemoryExtractionExecutor {
     });
   }
 
+  private normalizeLayerError(layer: LayersEnum, stage: 'extract' | 'persist', error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Error(`[${stage}] ${LAYER_LABEL_MAP[layer]}: ${message}`);
+  }
+
   private async persistExtraction(
     job: MemoryExtractionJob,
     messageIds: string[],
@@ -1165,64 +1282,131 @@ export class MemoryExtractionExecutor {
   ): Promise<PersistedMemoryResult> {
     const createdIds: string[] = [];
     const perLayer: Partial<Record<LayersEnum, number>> = {};
+    const errors: Error[] = [];
+    const appendError = (layer: LayersEnum, stage: 'extract' | 'persist', error: unknown) => {
+      errors.push(this.normalizeLayerError(layer, stage, error));
+    };
 
-    if (extraction.outputs.context) {
-      const ids = await this.persistContextMemories(
-        job,
-        messageIds,
-        extraction.outputs.context,
-        runtimes.embeddings,
-        this.modelConfig.embeddingsModel,
-        db,
+    const persistWithSpan = async (
+      layer: LayersEnum,
+      persist: () => Promise<string[]>,
+    ): Promise<void> => {
+      const attributes = {
+        layer: LAYER_LABEL_MAP[layer],
+        source: job.source,
+        source_id: job.sourceId,
+        user_id: job.userId,
+        ...attributesCommon(),
+      };
+
+      await tracer.startActiveSpan(
+        `Memory User Memory: Persist ${LAYER_LABEL_MAP[layer]}`,
+        { attributes },
+        async (span) => {
+          try {
+            const ids = await persist();
+
+            createdIds.push(...ids);
+            perLayer[layer] = ids.length;
+            this.recordLayerEntries(job, layer, ids.length);
+            span.setStatus({ code: SpanStatusCode.OK });
+            span.setAttribute('memory.persisted_count', ids.length);
+          } catch (error) {
+            appendError(layer, 'persist', error);
+            span.setStatus({
+              code: SpanStatusCode.ERROR,
+              message:
+                error instanceof Error ? error.message : 'Failed to persist extracted memories',
+            });
+            span.recordException(error as Error);
+          } finally {
+            span.end();
+          }
+        },
       );
-      createdIds.push(...ids);
-      perLayer.context = ids.length;
-      this.recordLayerEntries(job, LayersEnum.Context, ids.length);
+    };
+
+    const contextOutput = extraction.outputs.context;
+    if (contextOutput?.error) {
+      appendError(LayersEnum.Context, 'extract', contextOutput.error);
+    }
+    if (contextOutput?.data) {
+      await persistWithSpan(LayersEnum.Context, () =>
+        this.persistContextMemories(
+          job,
+          messageIds,
+          contextOutput.data,
+          runtimes.embeddings,
+          this.modelConfig.embeddingsModel,
+          this.embeddingContextLimit,
+          db,
+        ),
+      );
     }
 
-    if (extraction.outputs.experience) {
-      const ids = await this.persistExperienceMemories(
-        job,
-        messageIds,
-        extraction.outputs.experience,
-        runtimes.embeddings,
-        this.modelConfig.embeddingsModel,
-        db,
+    const experienceOutput = extraction.outputs.experience;
+    if (experienceOutput?.error) {
+      appendError(LayersEnum.Experience, 'extract', experienceOutput.error);
+    }
+    if (experienceOutput?.data) {
+      await persistWithSpan(LayersEnum.Experience, () =>
+        this.persistExperienceMemories(
+          job,
+          messageIds,
+          experienceOutput.data,
+          runtimes.embeddings,
+          this.modelConfig.embeddingsModel,
+          this.embeddingContextLimit,
+          db,
+        ),
       );
-      createdIds.push(...ids);
-      perLayer.experience = ids.length;
-      this.recordLayerEntries(job, LayersEnum.Experience, ids.length);
     }
 
-    if (extraction.outputs.preference) {
-      const ids = await this.persistPreferenceMemories(
-        job,
-        messageIds,
-        extraction.outputs.preference,
-        runtimes.embeddings,
-        this.modelConfig.embeddingsModel,
-        db,
+    const preferenceOutput = extraction.outputs.preference;
+    if (preferenceOutput?.error) {
+      appendError(LayersEnum.Preference, 'extract', preferenceOutput.error);
+    }
+    if (preferenceOutput?.data) {
+      await persistWithSpan(LayersEnum.Preference, () =>
+        this.persistPreferenceMemories(
+          job,
+          messageIds,
+          preferenceOutput.data,
+          runtimes.embeddings,
+          this.modelConfig.embeddingsModel,
+          this.embeddingContextLimit,
+          db,
+        ),
       );
-      createdIds.push(...ids);
-      perLayer.preference = ids.length;
-      this.recordLayerEntries(job, LayersEnum.Preference, ids.length);
     }
 
-    if (extraction.outputs.identity) {
-      const ids = await this.persistIdentityMemories(
-        job,
-        messageIds,
-        extraction.outputs.identity,
-        runtimes.embeddings,
-        this.modelConfig.embeddingsModel,
-        db,
+    const identityOutput = extraction.outputs.identity;
+    if (identityOutput?.error) {
+      appendError(LayersEnum.Identity, 'extract', identityOutput.error);
+    }
+    if (identityOutput?.data) {
+      await persistWithSpan(LayersEnum.Identity, () =>
+        this.persistIdentityMemories(
+          job,
+          messageIds,
+          identityOutput.data,
+          runtimes.embeddings,
+          this.modelConfig.embeddingsModel,
+          this.embeddingContextLimit,
+          db,
+        ),
       );
-      createdIds.push(...ids);
-      perLayer.identity = ids.length;
-      this.recordLayerEntries(job, LayersEnum.Identity, ids.length);
     }
 
-    return { createdIds, layers: perLayer };
+    if (errors.length) {
+      const detail = errors.map((error) => error.message).join('; ');
+      throw new AggregateError(errors, `Memory extraction encountered layer errors: ${detail}`);
+    }
+
+    return {
+      createdIds,
+      layers: perLayer,
+    };
   }
 
   private async getRuntime(userId: string, keyVaults?: UserKeyVaults): Promise<RuntimeBundle> {

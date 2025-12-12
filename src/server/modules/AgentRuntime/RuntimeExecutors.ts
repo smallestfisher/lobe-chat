@@ -19,6 +19,7 @@ import { ToolExecutionService } from '@/server/services/toolExecution';
 import type { IStreamEventManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:streaming-executors');
+const timing = debug('lobe-server:agent-runtime:timing');
 
 // Tool pricing configuration (USD per call)
 const TOOL_PRICING: Record<string, number> = {
@@ -68,17 +69,29 @@ export const createRuntimeExecutors = (
     // Get parentId from payload (parentId or parentMessageId depending on payload type)
     const parentId = llmPayload.parentId || (llmPayload as any).parentMessageId;
 
-    // create assistant message
-    const assistantMessageItem = await ctx.messageModel.create({
-      agentId: state.metadata!.agentId!,
-      content: '',
-      model,
-      parentId,
-      provider,
-      role: 'assistant',
-      threadId: state.metadata?.threadId,
-      topicId: state.metadata?.topicId,
-    });
+    // Get or create assistant message
+    // If assistantMessageId is provided in payload, use existing message instead of creating new one
+    const existingAssistantMessageId = (llmPayload as any).assistantMessageId;
+    let assistantMessageItem: { id: string };
+
+    if (existingAssistantMessageId) {
+      // Use existing assistant message (created by execAgent)
+      assistantMessageItem = { id: existingAssistantMessageId };
+      log(`${stagePrefix} Using existing assistant message: %s`, existingAssistantMessageId);
+    } else {
+      // Create new assistant message (legacy behavior)
+      assistantMessageItem = await ctx.messageModel.create({
+        agentId: state.metadata!.agentId!,
+        content: '',
+        model,
+        parentId,
+        provider,
+        role: 'assistant',
+        threadId: state.metadata?.threadId,
+        topicId: state.metadata?.topicId,
+      });
+      log(`${stagePrefix} Created new assistant message: %s`, assistantMessageItem.id);
+    }
 
     // 发布流式开始事件
     await streamManager.publishStreamEvent(operationId, {
@@ -146,10 +159,18 @@ export const createRuntimeExecutors = (
             type: 'llm_stream',
           });
 
+          const publishStart = Date.now();
           await streamManager.publishStreamChunk(operationId, stepIndex, {
             chunkType: 'text',
             content: delta,
           });
+          timing(
+            '[%s] flushTextBuffer published at %d, took %dms, length: %d',
+            operationLogId,
+            publishStart,
+            Date.now() - publishStart,
+            delta.length,
+          );
         }
       };
 
@@ -166,10 +187,18 @@ export const createRuntimeExecutors = (
             type: 'llm_stream',
           });
 
+          const publishStart = Date.now();
           await streamManager.publishStreamChunk(operationId, stepIndex, {
             chunkType: 'reasoning',
             reasoning: delta,
           });
+          timing(
+            '[%s] flushReasoningBuffer published at %d, took %dms, length: %d',
+            operationLogId,
+            publishStart,
+            Date.now() - publishStart,
+            delta.length,
+          );
         }
       };
 
@@ -192,7 +221,12 @@ export const createRuntimeExecutors = (
             });
           },
           onText: async (text) => {
-            // log(`[${operationLogId}][text]`, text);
+            timing(
+              '[%s] onText received chunk at %d, length: %d',
+              operationLogId,
+              Date.now(),
+              text.length,
+            );
             content += text;
 
             textBuffer += text;
@@ -206,7 +240,12 @@ export const createRuntimeExecutors = (
             }
           },
           onThinking: async (reasoning) => {
-            // log(`[${operationLogId}][reasoning]`, reasoning);
+            timing(
+              '[%s] onThinking received chunk at %d, length: %d',
+              operationLogId,
+              Date.now(),
+              reasoning.length,
+            );
             thinkingContent += reasoning;
 
             // Buffer reasoning 内容

@@ -1,16 +1,7 @@
 'use client';
 
-import { LobeUser } from '@lobechat/types';
 import { App } from 'antd';
-import {
-  ReactNode,
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import { ReactNode, createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { MARKET_ENDPOINTS, MARKET_OIDC_ENDPOINTS } from '@/services/_url';
@@ -101,13 +92,15 @@ const saveMarketTokensToDB = async (
  * 清除 DB 中的 market tokens
  */
 const clearMarketTokensFromDB = async () => {
+  // 如果已经没有 tokens，不需要调用 setSettings
+  const currentTokens = getMarketTokensFromDB();
+  if (!currentTokens?.accessToken && !currentTokens?.refreshToken && !currentTokens?.expiresAt) {
+    return;
+  }
+
   try {
     await useUserStore.getState().setSettings({
-      market: {
-        accessToken: undefined,
-        expiresAt: undefined,
-        refreshToken: undefined,
-      },
+      market: undefined,
     });
   } catch (error) {
     console.error('[MarketAuth] Failed to clear tokens from DB:', error);
@@ -172,9 +165,6 @@ export const MarketAuthProvider = ({ children, isDesktop }: MarketAuthProviderPr
   const [pendingSignInReject, setPendingSignInReject] = useState<((_reason?: any) => void) | null>(
     null,
   );
-
-  // Keep a snapshot of the local desktop user to restore after OIDC sign-out.
-  const previousLocalUserRef = useRef<LobeUser | undefined>(undefined);
 
   // 订阅 user store 的初始化状态，当 isUserStateInit 为 true 时，settings 数据已加载完成
   const isUserStateInit = useUserStore((s) => s.isUserStateInit);

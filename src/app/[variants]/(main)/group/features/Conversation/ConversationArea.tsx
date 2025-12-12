@@ -4,7 +4,6 @@ import { Suspense, memo, useEffect, useMemo } from 'react';
 import { Flexbox } from 'react-layout-kit';
 
 import { ChatList, ConversationProvider } from '@/features/Conversation';
-import { useCurrentContext } from '@/hooks/useCurrentContext';
 import { useOperationState } from '@/hooks/useOperationState';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
@@ -24,6 +23,8 @@ import MessageFromUrl from './MainChatInput/MessageFromUrl';
 import ThreadHydration from './ThreadHydration';
 import ZenModeToast from './ZenModeToast';
 import { useActionsBarConfig } from './useActionsBarConfig';
+import { useGroupContext } from './useGroupContext';
+import { useGroupHooks } from './useGroupHooks';
 
 interface ConversationAreaProps {
   mobile?: boolean;
@@ -36,7 +37,7 @@ interface ConversationAreaProps {
  * Uses ChatList from @/features/Conversation and MainChatInput for custom features.
  */
 const Conversation = memo<ConversationAreaProps>(({ mobile = false }) => {
-  const context = useCurrentContext();
+  const context = useGroupContext();
 
   const enabledPlugins = useAgentStore(agentSelectors.currentAgentPlugins);
   const [useFetchUserMemory, setActiveMemoryContext] = useUserMemoryStore((s) => [
@@ -91,11 +92,15 @@ const Conversation = memo<ConversationAreaProps>(({ mobile = false }) => {
   // Get actionsBar config with branching support from ChatStore
   const actionsBarConfig = useActionsBarConfig();
 
+  // Get group-specific hooks for send logic
+  const groupHooks = useGroupHooks(context);
+
   return (
     <ConversationProvider
       actionsBar={actionsBarConfig}
       context={context}
       hasInitMessages={!!messages}
+      hooks={groupHooks}
       messages={messages}
       onMessagesChange={(messages) => {
         replaceMessages(messages, { context });

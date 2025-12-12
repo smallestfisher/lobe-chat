@@ -8,6 +8,7 @@ import {
   layersCallsCounter,
   tracer,
 } from '@lobechat/observability-otel/modules/memory-user-memory';
+import { attributesCommon } from '@lobechat/observability-otel/node';
 import { LayersEnum } from '@lobechat/types';
 
 import {
@@ -29,7 +30,6 @@ import {
   MemoryResultRecorder,
 } from '../types';
 import { resolvePromptRoot } from '../utils/path';
-import { attributesCommon } from '@lobechat/observability-otel/node';
 
 const LAYER_ORDER: LayersEnum[] = [
   'identity' as LayersEnum,
@@ -62,6 +62,17 @@ export interface MemoryExtractionServiceOptions {
   promptRoot?: string;
   runtimes: MemoryExtractionRuntimeOptions;
 }
+
+export interface MemoryExtractionLayerOutputTypes {
+  [LayersEnum.Context]: Awaited<ReturnType<ContextExtractor['structuredCall']>>;
+  [LayersEnum.Experience]: Awaited<ReturnType<ExperienceExtractor['structuredCall']>>;
+  [LayersEnum.Preference]: Awaited<ReturnType<PreferenceExtractor['structuredCall']>>;
+  [LayersEnum.Identity]: Awaited<ReturnType<IdentityExtractor['structuredCall']>>;
+}
+
+export type MemoryExtractionLayerOutputType = {
+  [K in keyof MemoryExtractionLayerOutputTypes]: MemoryExtractionLayerOutputTypes[K];
+}[keyof MemoryExtractionLayerOutputTypes];
 
 export class MemoryExtractionService<RO> {
   private readonly config: MemoryExtractionLLMConfig;
@@ -204,11 +215,20 @@ export class MemoryExtractionService<RO> {
       const outputs = await this.runLayers(job, layersToExtract, { ...options });
 
       const processedLayersCount = {
-        context: outputs.context ? outputs.context?.memories?.length : 0,
-        experience: outputs.experience ? outputs.experience?.memories?.length : 0,
-        // NOTICE: Identity layer does not process accumulatively, so we set it to 0
-        identity: 0,
-        preference: outputs.preference ? outputs.preference?.memories?.length : 0,
+        context: outputs.context?.data ? outputs.context?.data?.memories?.length : 0,
+        experience: outputs.experience?.data ? outputs.experience?.data?.memories?.length : 0,
+        identity: outputs.identity?.data
+          ? (outputs.identity?.data?.add?.length || 0) +
+            (outputs.identity?.data?.update?.length || 0) +
+            (outputs.identity?.data?.remove?.length || 0)
+          : 0,
+        preference: outputs.preference?.data ? outputs.preference?.data?.memories?.length : 0,
+      };
+      const processedErrorsCount = {
+        context: outputs.context?.error ? 1 : 0,
+        experience: outputs.experience?.error ? 1 : 0,
+        identity: outputs.identity?.error ? 1 : 0,
+        preference: outputs.preference?.error ? 1 : 0,
       };
 
       const processedCount = Object.values(processedLayersCount).reduce((a, b) => a + b, 0);
@@ -222,6 +242,7 @@ export class MemoryExtractionService<RO> {
         layers: layersToExtract,
         outputs,
         processedCounts: processedCount,
+        processedErrorsCount: processedErrorsCount,
         processedLayersCount: processedLayersCount,
       };
     } catch (error) {
@@ -312,55 +333,90 @@ export class MemoryExtractionService<RO> {
       existingIdentitiesContext?: string;
     },
   ): Promise<MemoryExtractionLayerOutputs> {
-    const [
-      context,
-      experience,
-      preference,
-      identity,
-    ] = await Promise.all(([
-      LayersEnum.Context,
-      LayersEnum.Experience,
-      LayersEnum.Preference,
-      LayersEnum.Identity,
-    ] as LayersEnum[])
-    .filter((layer) => layers.includes(layer))
-    .map(async (layer) => this.runLayer(job, layer, options))) as [
-      Awaited<ReturnType<ContextExtractor['structuredCall']>>,
-      Awaited<ReturnType<ExperienceExtractor['structuredCall']>>,
-      Awaited<ReturnType<PreferenceExtractor['structuredCall']>>,
-      Awaited<ReturnType<IdentityExtractor['structuredCall']>>,
-    ];
+    const outputs: Partial<MemoryExtractionLayerOutputs> = {};
 
-    return {
-      context,
-      experience,
-      identity,
-      preference,
-    }
+    const setLayerOutput = (
+      layer: LayersEnum,
+      result: { data: MemoryExtractionLayerOutputType } | { error: unknown },
+    ) => {
+      switch (layer) {
+        case LayersEnum.Context: {
+          outputs.context = result as
+            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
+            | { error: unknown };
+          break;
+        }
+        case LayersEnum.Experience: {
+          outputs.experience = result as
+            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
+            | { error: unknown };
+          break;
+        }
+        case LayersEnum.Preference: {
+          outputs.preference = result as
+            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
+            | { error: unknown };
+          break;
+        }
+        case LayersEnum.Identity: {
+          outputs.identity = result as
+            | { data: MemoryExtractionLayerOutputTypes[typeof layer] }
+            | { error: unknown };
+          break;
+        }
+        default: {
+          break;
+        }
+      }
+    };
+
+    await Promise.all(
+      (
+        [
+          LayersEnum.Context,
+          LayersEnum.Experience,
+          LayersEnum.Preference,
+          LayersEnum.Identity,
+        ] as LayersEnum[]
+      ).map(async (layer) => {
+        if (!layers.includes(layer)) {
+          return;
+        }
+
+        try {
+          const result = await this.runLayer(job, layer, options);
+          setLayerOutput(layer, { data: result });
+        } catch (error) {
+          setLayerOutput(layer, { error });
+        }
+      }),
+    );
+
+    return outputs as MemoryExtractionLayerOutputs;
   }
 
-  private async runLayer(
+  private async runLayer<L extends LayersEnum>(
     job: MemoryExtractionJob,
-    layer: LayersEnum,
+    layer: L,
     options: ExtractorOptions & {
       existingIdentitiesContext?: string;
     },
-  ): Promise<any> {
+  ): Promise<MemoryExtractionLayerOutputType> {
     switch (layer) {
       case LayersEnum.Context: {
-        return this.runContextLayer(job, options);
+        return await this.runContextLayer(job, options);
       }
       case LayersEnum.Experience: {
-        return this.runExperienceLayer(job, options);
+        return await this.runExperienceLayer(job, options);
       }
       case LayersEnum.Preference: {
-        return this.runPreferenceLayer(job, options);
+        return await this.runPreferenceLayer(job, options);
       }
       case LayersEnum.Identity: {
-        return this.runIdentityLayer(job, options);
+        return await this.runIdentityLayer(job, options);
       }
       default: {
-        return [];
+        throw new Error(`Unsupported memory layer: ${layer}`);
       }
     }
   }

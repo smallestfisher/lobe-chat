@@ -5,10 +5,13 @@ import pMap from 'p-map';
 import { z } from 'zod';
 
 import { isEnableAgent } from '@/app/(backend)/api/agent/isEnableAgent';
+import { MessageModel } from '@/database/models/message';
+import { TopicModel } from '@/database/models/topic';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { AiAgentService } from '@/server/services/aiAgent';
+import { AiChatService } from '@/server/services/aiChat';
 import { nanoid } from '@/utils/uuid';
 
 const log = debug('lobe-server:ai-agent-router');
@@ -66,14 +69,17 @@ const StartExecutionSchema = z.object({
   priority: z.enum(['high', 'normal', 'low']).optional().default('normal'),
 });
 
-/** Schema for single agent task (used in both execAgent and execAgents) */
-const ExecAgentTaskSchema = z
+/**
+ * Schema for execAgent - execute a single Agent
+ */
+const ExecAgentSchema = z
   .object({
     /** The agent ID to run (either agentId or slug is required) */
     agentId: z.string().optional(),
     /** Application context for message storage */
     appContext: z
       .object({
+        groupId: z.string().optional().nullable(),
         scope: z.string().optional().nullable(),
         sessionId: z.string().optional(),
         threadId: z.string().optional().nullable(),
@@ -93,7 +99,28 @@ const ExecAgentTaskSchema = z
     message: 'Either agentId or slug must be provided',
   });
 
-const ExecAgentSchema = ExecAgentTaskSchema;
+/**
+ * Schema for execGroupAgent - execute Supervisor Agent in Group chat
+ */
+const ExecGroupAgentSchema = z.object({
+  /** The Supervisor agent ID */
+  agentId: z.string(),
+  /** File IDs attached to the message */
+  files: z.array(z.string()).optional(),
+  /** The Group ID */
+  groupId: z.string(),
+  /** User message content */
+  message: z.string(),
+  /** Optional: Create a new topic */
+  newTopic: z
+    .object({
+      title: z.string().optional(),
+      topicMessageIds: z.array(z.string()).optional(),
+    })
+    .optional(),
+  /** Existing topic ID */
+  topicId: z.string().optional().nullable(),
+});
 
 /**
  * Schema for execAgents - batch execution of multiple agents
@@ -102,7 +129,7 @@ const ExecAgentsSchema = z.object({
   /** Whether to execute tasks in parallel (default: true) */
   parallel: z.boolean().optional().default(true),
   /** Array of agent tasks to execute */
-  tasks: z.array(ExecAgentTaskSchema).min(1),
+  tasks: z.array(ExecAgentSchema).min(1),
 });
 
 const aiAgentProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
@@ -117,6 +144,9 @@ const aiAgentProcedure = authedProcedure.use(serverDatabase).use(async (opts) =>
     ctx: {
       agentRuntimeService: new AgentRuntimeService(ctx.serverDB, ctx.userId),
       aiAgentService: new AiAgentService(ctx.serverDB, ctx.userId),
+      aiChatService: new AiChatService(ctx.serverDB, ctx.userId),
+      messageModel: new MessageModel(ctx.serverDB, ctx.userId),
+      topicModel: new TopicModel(ctx.serverDB, ctx.userId),
     },
   });
 });
@@ -146,11 +176,9 @@ export const aiAgentRouter = router({
         });
       }
 
-      let prefix = `agent_${Date.now()}`;
-      if (agentId && topicId) prefix = `${agentId}_${topicId}`;
-
-      // Generate runtime operation ID: agentId_topicId_random
-      const operationId = `${prefix}_${nanoid(8)}`;
+      // Generate runtime operation ID: agt_{timestamp}_{agentId}_{topicId}_{random}
+      const timestamp = Date.now();
+      const operationId = `agt_${timestamp}_${agentId || 'unknown'}_${topicId || 'none'}_${nanoid(8)}`;
 
       log(`Creating operation ${operationId} for user ${ctx.userId}`);
 
@@ -224,7 +252,7 @@ export const aiAgentRouter = router({
         slug,
       });
     } catch (error: any) {
-      log('execAgent failed: %O', error);
+      console.error('execAgent failed: %O', error);
 
       if (error instanceof TRPCError) {
         throw error;
@@ -307,6 +335,58 @@ export const aiAgentRouter = router({
         total: tasks.length,
       },
     };
+  }),
+
+  /**
+   * Execute Group Agent (Supervisor) in a single call
+   *
+   * This endpoint combines message creation and agent execution:
+   * 1. Create topic (if needed)
+   * 2. Create user message
+   * 3. Create assistant message placeholder
+   * 4. Trigger Supervisor Agent execution
+   * 5. Return operationId for SSE connection + messages for UI sync
+   */
+  execGroupAgent: aiAgentProcedure.input(ExecGroupAgentSchema).mutation(async ({ input, ctx }) => {
+    const { agentId, groupId, message, files, topicId, newTopic } = input;
+
+    log('execGroupAgent: agentId=%s, groupId=%s', agentId, groupId);
+
+    try {
+      // Execute group agent
+      const result = await ctx.aiAgentService.execGroupAgent({
+        agentId,
+        files,
+        groupId,
+        message,
+        newTopic,
+        topicId,
+      });
+
+      // Get messages and topics for UI sync
+      // Messages include the assistant message with error if operation failed to start
+      const { messages, topics } = await ctx.aiChatService.getMessagesAndTopics({
+        agentId,
+        includeTopic: result.isCreateNewTopic,
+        topicId: result.topicId,
+      });
+
+      // Return result with messages/topics - includes error/success fields
+      // Frontend can check success to decide whether to connect to SSE stream
+      return { ...result, messages, topics };
+    } catch (error: any) {
+      log('execGroupAgent failed: %O', error);
+
+      if (error instanceof TRPCError) {
+        throw error;
+      }
+
+      throw new TRPCError({
+        cause: error,
+        code: 'INTERNAL_SERVER_ERROR',
+        message: `Failed to execute group agent: ${error.message}`,
+      });
+    }
   }),
 
   getOperationStatus: aiAgentProcedure

@@ -12,6 +12,7 @@ import { Center, Flexbox } from 'react-layout-kit';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import {
+  getTransparentDragImage,
   useDragActive,
   useDragState,
 } from '@/app/[variants]/(main)/resource/features/DndContextWrapper';
@@ -37,7 +38,7 @@ const useStyles = createStyles(({ css, token, cx, isDarkMode }) => {
   return {
     checkbox: hover,
     container: css`
-      cursor: grab;
+      cursor: pointer;
       border-block-end: 1px solid ${isDarkMode ? token.colorSplit : rgba(token.colorSplit, 0.06)};
 
       &:hover {
@@ -46,10 +47,6 @@ const useStyles = createStyles(({ css, token, cx, isDarkMode }) => {
         .${cx(hover)} {
           opacity: 1;
         }
-      }
-
-      &:active {
-        cursor: grabbing;
       }
 
       .chunk-tag {
@@ -67,8 +64,8 @@ const useStyles = createStyles(({ css, token, cx, isDarkMode }) => {
     `,
 
     dragging: css`
-      opacity: 0.5;
       will-change: transform;
+      opacity: 0.5;
     `,
 
     hover,
@@ -161,10 +158,10 @@ const FileListItem = memo<FileListItemProps>(
     // Memoize computed values that don't change
     const computedValues = useMemo(
       () => ({
-        isSupportedForChunking: !isChunkingUnsupported(fileType),
-        isPage: sourceType === 'document' || fileType === 'custom/document',
+        emoji: sourceType === 'document' || fileType === 'custom/document' ? metadata?.emoji : null,
         isFolder: fileType === 'custom/folder',
-        emoji: (sourceType === 'document' || fileType === 'custom/document') ? metadata?.emoji : null,
+        isPage: sourceType === 'document' || fileType === 'custom/document',
+        isSupportedForChunking: !isChunkingUnsupported(fileType),
       }),
       [fileType, sourceType, metadata?.emoji],
     );
@@ -198,9 +195,10 @@ const FileListItem = memo<FileListItemProps>(
         });
 
         // Set drag image to be transparent (we use custom overlay)
-        const img = new Image();
-        img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-        e.dataTransfer.setDragImage(img, 0, 0);
+        const img = getTransparentDragImage();
+        if (img) {
+          e.dataTransfer.setDragImage(img, 0, 0);
+        }
         e.dataTransfer.effectAllowed = 'move';
       },
       [libraryId, dragData, id, isFolder, setCurrentDrag],

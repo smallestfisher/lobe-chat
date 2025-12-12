@@ -16,6 +16,7 @@ import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
 import { useAgentStore } from '@/store/agent';
 import { useChatStore } from '@/store/chat';
+import { topicSelectors } from '@/store/chat/slices/topic/selectors';
 import { useGlobalStore } from '@/store/global';
 import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
@@ -60,12 +61,12 @@ const AgentSelector = memo<AgentSelectorProps>(({ agentId, onAgentChange }) => {
     if (pageAgentId && !hasPageAgent) {
       return [
         {
-          id: pageAgentId,
-          title: t('builtinCopilot', { defaultValue: 'Built-in Copilot', ns: 'chat' }),
           avatar: null,
           description: null,
-          type: 'agent' as const,
+          id: pageAgentId,
           pinned: false,
+          title: t('builtinCopilot', { defaultValue: 'Built-in Copilot', ns: 'chat' }),
+          type: 'agent' as const,
           updatedAt: new Date(),
         },
         ...agents,
@@ -135,7 +136,6 @@ const AgentSelector = memo<AgentSelectorProps>(({ agentId, onAgentChange }) => {
         padding={2}
         style={{
           minWidth: 32,
-          overflow: 'hidden',
         }}
         variant={'borderless'}
       >
@@ -173,14 +173,8 @@ const CopilotToolbar = memo<CopilotToolbarProps>(({ agentId, isHovered }) => {
   const [activeTopicId, switchTopic, topics] = useChatStore((s) => [
     s.activeTopicId,
     s.switchTopic,
-    s.topicDataMap[agentId]?.items,
+    topicSelectors.currentTopics(s),
   ]);
-
-  // Find active topic from the agent's topics list directly
-  const activeTopic = useMemo(
-    () => topics?.find((topic) => topic.id === activeTopicId),
-    [topics, activeTopicId],
-  );
 
   const items = useMemo<ItemType[]>(
     () =>

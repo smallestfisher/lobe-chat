@@ -32,8 +32,8 @@ export default {
     unknownTitle: '未命名作品',
   },
   availableAgents: '可用助手',
-  builtinCopilot: '内置 Copilot',
   backToBottom: '跳转至当前',
+  builtinCopilot: '内置 Copilot',
   chatList: {
     expandMessage: '展开消息',
     longMessageDetail: '查看详情',
@@ -108,6 +108,10 @@ export default {
   },
   groupDescription: '团队描述',
   groupSidebar: {
+    agentProfile: {
+      chat: '对话',
+      model: '模型',
+    },
     members: {
       addMember: '添加成员',
       enableOrchestrator: '启用主持人',

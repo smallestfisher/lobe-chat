@@ -12,9 +12,13 @@ import {
   SendGroupMessageParams,
   UIChatMessage,
 } from '@lobechat/types';
+import { nanoid } from '@lobechat/utils';
+import debug from 'debug';
 import { produce } from 'immer';
 import { StateCreator } from 'zustand/vanilla';
 
+import { lambdaClient } from '@/libs/trpc/client';
+import { StreamEvent, agentRuntimeClient } from '@/services/agentRuntime';
 import { getChatGroupStoreState } from '@/store/agentGroup';
 import { agentGroupSelectors } from '@/store/agentGroup/selectors';
 import type { ChatStoreState } from '@/store/chat/initialState';
@@ -32,6 +36,8 @@ import { sessionSelectors } from '@/store/session/selectors';
 import { userProfileSelectors } from '@/store/user/selectors';
 import { getUserStoreState } from '@/store/user/store';
 import { setNamespace } from '@/utils/storeDebug';
+
+const log = debug('store:chat:ai-agent:agentGroup');
 
 const n = setNamespace('aiAgentGroup');
 
@@ -72,32 +78,32 @@ const formatSupervisorTodoContent = (todos: SupervisorTodoItem[]): string => {
  * Extract mentioned agent IDs from message content
  * Looks for <mention id="agentId">Name</mention> tags
  */
-const extractMentionsFromContent = (
-  content: string,
-  groupMembers?: GroupMemberInfo[],
-): string[] => {
-  const mentionRegex = /<mention\s+[^>]*id="([^"]+)"[^>]*\/>/g;
-  const mentions = new Set<string>();
-  let match;
-
-  while ((match = mentionRegex.exec(content)) !== null) {
-    const mentionId = match[1];
-    if (!mentionId) continue;
-
-    if (mentionId === 'ALL_MEMBERS') {
-      if (groupMembers?.length) {
-        groupMembers.forEach((member) => {
-          if (member.id) mentions.add(member.id);
-        });
-      }
-      continue;
-    }
-
-    mentions.add(mentionId);
-  }
-
-  return [...mentions];
-};
+// const extractMentionsFromContent = (
+//   content: string,
+//   groupMembers?: GroupMemberInfo[],
+// ): string[] => {
+//   const mentionRegex = /<mention\s+[^>]*id="([^"]+)"[^>]*\/>/g;
+//   const mentions = new Set<string>();
+//   let match;
+//
+//   while ((match = mentionRegex.exec(content)) !== null) {
+//     const mentionId = match[1];
+//     if (!mentionId) continue;
+//
+//     if (mentionId === 'ALL_MEMBERS') {
+//       if (groupMembers?.length) {
+//         groupMembers.forEach((member) => {
+//           if (member.id) mentions.add(member.id);
+//         });
+//       }
+//       continue;
+//     }
+//
+//     mentions.add(mentionId);
+//   }
+//
+//   return [...mentions];
+// };
 
 /**
  * Check if a message is a tool calling message that requires a follow-up
@@ -265,100 +271,230 @@ export const agentGroupSlice: StateCreator<
   [],
   ChatGroupChatAction
 > = (set, get) => ({
-  sendGroupMessage: async ({ groupId, message, files, onlyAddUserMessage, targetMemberId }) => {
-    const {
-      optimisticCreateMessage,
-      internal_triggerSupervisorDecisionDebounced,
-      internal_setActiveGroup,
-      activeTopicId,
-    } = get();
-
+  sendGroupMessage: async ({ context, message, files }) => {
     if (!message.trim() && (!files || files.length === 0)) return;
 
-    internal_setActiveGroup(groupId);
+    const { agentId, groupId, topicId } = context;
 
-    set({ isCreatingMessage: true }, false, n('creatingGroupMessage/start'));
+    if (!agentId || !groupId) {
+      log('sendGroupMessage: missing agentId or groupId in context');
+      return;
+    }
+
+    const { internal_handleAgentStreamEvent, optimisticCreateTmpMessage, startOperation } = get();
+
+    log(
+      'sendGroupMessage: agentId=%s, groupId=%s, message=%s',
+      agentId,
+      groupId,
+      message.slice(0, 50),
+    );
+
+    set({ isCreatingMessage: true }, false, n('sendGroupMessage/start'));
+
+    // 0. Create execServerAgentRuntime operation FIRST for correct loading state
+    // This ensures isAgentRuntimeRunningByContext returns true during mutate call
+    const tempUserId = 'tmp_' + nanoid();
+    const tempAssistantId = 'tmp_' + nanoid();
+    const fileIds = files?.map((f) => f.id);
+
+    const { operationId: execOperationId, abortController: execAbortController } = startOperation({
+      type: 'execServerAgentRuntime',
+      context: { ...context, messageId: tempUserId },
+      label: 'Execute Server Agent',
+    });
+
+    // 1. Optimistic update - create temp messages immediately for instant UI feedback
+    // Pass operationId so internal_dispatchMessage uses the correct context
+    optimisticCreateTmpMessage(
+      {
+        content: message,
+        files: fileIds,
+        role: 'user',
+        agentId,
+        groupId,
+        topicId: topicId ?? undefined,
+      },
+      { tempMessageId: tempUserId, operationId: execOperationId },
+    );
+
+    // Create temp assistant message (loading state)
+    optimisticCreateTmpMessage(
+      {
+        content: LOADING_FLAT,
+        role: 'assistant',
+        agentId,
+        groupId,
+        topicId: topicId ?? undefined,
+      },
+      { tempMessageId: tempAssistantId, operationId: execOperationId },
+    );
+
+    // Start loading state for temp messages
+    get().internal_toggleMessageLoading(true, tempUserId);
+    get().internal_toggleMessageLoading(true, tempAssistantId);
 
     try {
-      const userMessage: CreateMessageParams = {
-        content: message,
-        files: files?.map((f) => f.id),
-        role: 'user',
-        groupId,
-        agentId: useSessionStore.getState().activeId,
-        topicId: activeTopicId,
-        targetId: targetMemberId,
-      };
+      // 2. Call backend execGroupAgent - creates messages and triggers Agent
+      // Pass AbortSignal to allow cancellation during the API call
+      const result = await lambdaClient.aiAgent.execGroupAgent.mutate(
+        { agentId, files: fileIds, groupId, message, topicId },
+        { signal: execAbortController.signal },
+      );
 
-      const result = await optimisticCreateMessage(userMessage);
+      log(
+        'execGroupAgent result: operationId=%s, topicId=%s, success=%s',
+        result.operationId,
+        result.topicId,
+        result.success,
+      );
 
-      // if only add user message, then stop
-      if (onlyAddUserMessage) {
-        set({ isCreatingMessage: false }, false, n('creatingGroupMessage/onlyUser'));
+      // 3. Update topics if new topic was created
+      if (result.topics) {
+        const pageSize = 20; // Default page size for topics
+        get().internal_updateTopics(agentId, {
+          groupId,
+          items: result.topics.items as any, // Type from DB may have null vs undefined differences
+          pageSize,
+          total: result.topics.total,
+        });
+      }
+
+      // 4. Switch to new topic if created
+      if (result.isCreateNewTopic && result.topicId) {
+        await get().switchTopic(result.topicId, true);
+      }
+
+      // 5. Create execContext with updated topicId from server response
+      const execContext = { ...context, topicId: result.topicId || topicId };
+
+      // 6. Replace temp messages with server messages
+      // Messages include assistant message with error if operation failed to start
+      if (result.messages) {
+        get().replaceMessages(result.messages, {
+          action: n('sendGroupMessage/syncMessages'),
+          context: execContext,
+        });
+        // Delete temp messages - use execOperationId for correct context
+        get().internal_dispatchMessage(
+          { type: 'deleteMessages', ids: [tempUserId, tempAssistantId] },
+          { operationId: execOperationId },
+        );
+      }
+
+      // 7. Check if operation failed to start (e.g., QStash unavailable)
+      // In this case, messages are synced but we skip SSE connection
+      if (result.success === false) {
+        log('Agent operation failed to start: %s', result.error);
+        // Complete the operation with error status
+        get().failOperation(execOperationId, {
+          type: 'AgentStartupError',
+          message: result.error || 'Agent operation failed to start',
+        });
+        // Stop loading state for assistant message
+        get().internal_toggleMessageLoading(false, result.assistantMessageId);
         return;
       }
 
-      if (!result) return;
-      const messageId = result.id;
+      // 8. Create streaming context - use assistantMessageId from backend response
+      const streamContext = {
+        assistantId: result.assistantMessageId,
+        content: '',
+        reasoning: '',
+        tmpAssistantId: tempAssistantId, // Used for cleanup if needed
+      };
 
-      if (messageId) {
-        // Use the specific group's config rather than relying on active session
-        const groupConfig = selectGroupConfig(groupId);
+      // 9. Start child operation for SSE stream using backend operationId
+      get().startOperation({
+        type: 'groupAgentStream',
+        operationId: result.operationId,
+        context: { ...execContext, messageId: result.assistantMessageId },
+        label: 'Group Agent Stream',
+        parentOperationId: execOperationId,
+      });
 
-        // If supervisor is disabled, check for direct mentions and trigger them directly
-        if (!groupConfig?.enableSupervisor) {
-          const agents = sessionSelectors.currentGroupAgents(useSessionStore.getState());
-          const mentionableGroupAgents: GroupMemberInfo[] = agents.map((agent) => ({
-            id: agent.id,
-            title: agent.title ?? agent.id,
-          }));
-          const mentionedAgentIds = extractMentionsFromContent(message, mentionableGroupAgents);
+      // Associate assistant message with both operations:
+      // - execServerAgentRuntime (parent) - for isGenerating detection
+      // - groupAgentStream (child) - for stream cancel handling
+      get().associateMessageWithOperation(result.assistantMessageId, execOperationId);
+      get().associateMessageWithOperation(result.assistantMessageId, result.operationId);
 
-          const candidateAgentIds = new Set(mentionedAgentIds);
-
-          if (targetMemberId && agents?.some((agent) => agent.id === targetMemberId)) {
-            candidateAgentIds.add(targetMemberId);
+      // 10. Connect to SSE stream
+      // Server will automatically close the connection after sending agent_runtime_end event
+      const eventSource = agentRuntimeClient.createStreamConnection(result.operationId, {
+        includeHistory: false,
+        onConnect: () => {
+          log('Stream connected to %s', result.operationId);
+        },
+        onDisconnect: () => {
+          log('Stream disconnected from %s', result.operationId);
+          // Complete both operations when stream disconnects (either by server close or client abort)
+          get().completeOperation(result.operationId);
+          get().completeOperation(execOperationId);
+        },
+        onError: (error: Error) => {
+          log('Stream error for %s: %O', result.operationId, error);
+          // Fail the stream operation on error
+          get().failOperation(result.operationId, {
+            type: 'AgentStreamError',
+            message: error.message,
+          });
+          if (streamContext.assistantId) {
+            get().internal_handleAgentError(streamContext.assistantId, error.message);
           }
+        },
+        onEvent: async (event: StreamEvent) => {
+          await internal_handleAgentStreamEvent(result.operationId, event, streamContext);
+        },
+      });
 
-          if (candidateAgentIds.size > 0) {
-            // Validate that mentioned agents exist in the group
-            const validMentionedAgents = [...candidateAgentIds].filter((agentId) =>
-              agents?.some((agent) => agent.id === agentId),
-            );
-
-            if (validMentionedAgents.length > 0) {
-              console.log('Supervisor disabled, triggering direct mentions:', validMentionedAgents);
-
-              // Process mentioned agents directly without supervisor decision
-              const { internal_executeAgentResponses } = get();
-              const decisions = validMentionedAgents.map((agentId) => ({
-                id: agentId,
-                target: targetMemberId && agentId === targetMemberId ? 'user' : undefined,
-              }));
-
-              await internal_executeAgentResponses(groupId, decisions);
-            } else {
-              console.log('Supervisor disabled, mentioned agents not found in group');
-            }
-          } else {
-            if (targetMemberId) {
-              console.log(
-                'Supervisor disabled and DM target not found in group, no agent responses triggered',
-              );
-            } else {
-              console.log(
-                'Supervisor disabled and no mentions found, no agent responses triggered',
-              );
-            }
-          }
-        } else {
-          internal_triggerSupervisorDecisionDebounced(groupId);
-        }
-      }
+      // 11. Register cancel handler for aborting SSE stream
+      get().onOperationCancel(result.operationId, () => {
+        log('Cancelling SSE stream for operation %s', result.operationId);
+        eventSource.abort();
+      });
     } catch (error) {
-      console.error('Failed to send group message:', error);
+      // Check if this is an abort error (user cancelled the operation)
+      const isAbortError =
+        error instanceof Error &&
+        (error.name === 'AbortError' ||
+          error.message.includes('aborted') ||
+          error.message.includes('cancelled'));
+
+      if (isAbortError) {
+        log('sendGroupMessage aborted by user');
+        // Operation was cancelled by user, status already updated by cancelOperation
+        // Just clean up temp messages
+        get().internal_dispatchMessage(
+          {
+            type: 'deleteMessages',
+            ids: [tempUserId, tempAssistantId],
+          },
+          { operationId: execOperationId },
+        );
+      } else {
+        log('sendGroupMessage failed: %O', error);
+        console.error('Failed to send group message:', error);
+
+        // Remove temp messages on error - use execOperationId for correct context
+        get().internal_dispatchMessage(
+          {
+            type: 'deleteMessages',
+            ids: [tempUserId, tempAssistantId],
+          },
+          { operationId: execOperationId },
+        );
+
+        // Fail the execServerAgentRuntime operation
+        get().failOperation(execOperationId, {
+          type: 'SendGroupMessageError',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
     } finally {
-      set({ isCreatingMessage: false }, false, n('creatingGroupMessage/end'));
+      get().internal_toggleMessageLoading(false, tempUserId);
+      get().internal_toggleMessageLoading(false, tempAssistantId);
+      set({ isCreatingMessage: false }, false, n('sendGroupMessage/end'));
     }
   },
 
@@ -746,8 +882,7 @@ export const agentGroupSlice: StateCreator<
   },
 
   internal_setActiveGroup: () => {
-    // Update the active session type to 'group' when setting an active group
-    get().internal_updateActiveSessionType('group');
+    // No-op: activeGroupId is now used to determine group session type
   },
 
   internal_toggleSupervisorLoading: (loading: boolean, groupId?: string) => {

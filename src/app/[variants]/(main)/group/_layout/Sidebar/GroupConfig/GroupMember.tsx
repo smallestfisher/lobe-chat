@@ -2,7 +2,7 @@
 
 import type { AgentItem } from '@lobechat/types';
 import { ActionIcon, SortableList } from '@lobehub/ui';
-import { Settings, UserMinus, UserPlus } from 'lucide-react';
+import { UserMinus, UserPlus } from 'lucide-react';
 import { memo, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flexbox } from 'react-layout-kit';
@@ -14,6 +14,7 @@ import { agentGroupSelectors } from '@/store/agentGroup/selectors';
 import { useChatStore } from '@/store/chat';
 import { chatSelectors } from '@/store/chat/selectors';
 
+import AgentProfilePopup from './AgentProfilePopup';
 import GroupMemberItem from './GroupMemberItem';
 
 interface GroupMemberProps {
@@ -40,8 +41,8 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
   const isSupervisorLoading = useChatStore(chatSelectors.isSupervisorLoading(groupId || ''));
   const groupConfig = useAgentGroupStore(agentGroupSelectors.getGroupConfig(groupId || ''));
 
-  // Get agents from store using the new selector
-  const groupAgents = useAgentGroupStore(agentGroupSelectors.getGroupAgents(groupId || ''));
+  // Get members from store (excluding supervisor)
+  const groupMembers = useAgentGroupStore(agentGroupSelectors.getGroupMembers(groupId || ''));
 
   const [enablingSupervisor, setEnablingSupervisor] = useState(false);
 
@@ -84,8 +85,8 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
     onAddModalOpenChange(false);
   };
 
-  // Use agents from store as the initial members
-  const [members, setMembers] = useState<AgentItem[]>(groupAgents);
+  // Use members from store as the initial local state
+  const [members, setMembers] = useState<AgentItem[]>(groupMembers);
 
   const [removingMemberIds, setRemovingMemberIds] = useState<string[]>([]);
 
@@ -98,10 +99,10 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
     }
   };
 
-  // Sync local state with store when groupAgents changes
+  // Sync local state with store when groupMembers changes
   useEffect(() => {
-    setMembers(groupAgents);
-  }, [groupAgents]);
+    setMembers(groupMembers);
+  }, [groupMembers]);
 
   const handleRemoveMember = async (memberId: string) => {
     if (!groupId) return;
@@ -146,7 +147,7 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
 
   return (
     <>
-      <Flexbox gap={2} padding={6}>
+      <Flexbox gap={2}>
         {/* Supervisor */}
         {groupConfig?.enableSupervisor ? (
           <GroupMemberItem
@@ -212,18 +213,9 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
               });
             }}
             renderItem={(item: AgentItem) => (
-              <GroupMemberItem
-                actions={
-                  <>
-                    <ActionIcon
-                      icon={Settings}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        // handleOpenMemberSettings(item.id);
-                      }}
-                      size={'small'}
-                      title={t('groupSidebar.members.memberSettings')}
-                    />
+              <AgentProfilePopup agent={item} onChat={() => handleMemberClick(item.id)}>
+                <GroupMemberItem
+                  actions={
                     <ActionIcon
                       danger
                       icon={UserMinus}
@@ -235,14 +227,13 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
                       size={'small'}
                       title={t('groupSidebar.members.removeMember')}
                     />
-                  </>
-                }
-                avatar={item.avatar || DEFAULT_AVATAR}
-                background={item.backgroundColor ?? undefined}
-                id={item.id}
-                onClick={() => handleMemberClick(item.id)}
-                title={item.title || t('defaultSession', { ns: 'common' })}
-              />
+                  }
+                  avatar={item.avatar || DEFAULT_AVATAR}
+                  background={item.backgroundColor ?? undefined}
+                  id={item.id}
+                  title={item.title || t('defaultSession', { ns: 'common' })}
+                />
+              </AgentProfilePopup>
             )}
             style={{ margin: 0 }}
           />
@@ -255,7 +246,7 @@ const GroupMember = memo<GroupMemberProps>(({ addModalOpen, onAddModalOpenChange
           orchestratorModel: groupConfig?.orchestratorModel,
           orchestratorProvider: groupConfig?.orchestratorProvider,
         }}
-        existingMembers={groupAgents.map((agent) => agent.id)}
+        existingMembers={groupMembers.map((member) => member.id)}
         groupId={groupId}
         mode="add"
         onCancel={() => onAddModalOpenChange(false)}

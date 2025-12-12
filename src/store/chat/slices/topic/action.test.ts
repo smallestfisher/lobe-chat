@@ -8,8 +8,8 @@ import { chatService } from '@/services/chat';
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 import { useSessionStore } from '@/store/session';
-import { LobeSessionType } from '@/types/session';
 import { ChatTopic } from '@/types/topic';
 
 import { useChatStore } from '../../store';
@@ -159,37 +159,6 @@ describe('topic action', () => {
       );
       expect(topicId).toEqual('new-topic-id');
     });
-
-    it('should reset supervisor todos after saving to topic for group sessions', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const groupId = 'group-session';
-      const todoKey = messageMapKey({ agentId: groupId, topicId: null });
-      const messages = [{ id: 'group-message-1' }] as UIChatMessage[];
-
-      await act(async () => {
-        useChatStore.setState({
-          activeAgentId: groupId,
-          activeSessionType: 'group',
-          messagesMap: {
-            [messageMapKey({ agentId: groupId })]: messages,
-          },
-          supervisorTodos: {
-            [todoKey]: [{ id: 'todo-1' } as any],
-          },
-        });
-      });
-
-      vi.spyOn(topicService, 'createTopic').mockResolvedValue('group-topic-id');
-      vi.spyOn(result.current, 'refreshTopic').mockResolvedValue(undefined);
-      const summarySpy = vi.spyOn(result.current, 'summaryTopicTitle').mockResolvedValue(undefined);
-
-      await act(async () => {
-        await result.current.saveToTopic();
-      });
-
-      expect(summarySpy).toHaveBeenCalled();
-      expect(useChatStore.getState().supervisorTodos[todoKey]).toEqual([]);
-    });
   });
   describe('refreshTopic', () => {
     beforeEach(() => {
@@ -223,22 +192,22 @@ describe('topic action', () => {
       expect(mutate).toHaveBeenCalledWith(expect.any(Function));
 
       // Verify the matcher function works correctly
+      // Key format: [SWR_USE_FETCH_TOPIC, containerKey, { isInbox, pageSize }]
       const matcherFn = (mutate as Mock).mock.calls[0][0];
-      // Should match key with correct agentId
+      const containerKey = `agent_${activeAgentId}`;
+
+      // Should match key with correct containerKey
       expect(
-        matcherFn([
-          'SWR_USE_FETCH_TOPIC',
-          { agentId: activeAgentId, isInbox: false, pageSize: 20 },
-        ]),
+        matcherFn(['SWR_USE_FETCH_TOPIC', containerKey, { isInbox: false, pageSize: 20 }]),
       ).toBe(true);
-      // Should not match key with different agentId
+      // Should not match key with different containerKey
       expect(
-        matcherFn(['SWR_USE_FETCH_TOPIC', { agentId: 'other-id', isInbox: false, pageSize: 20 }]),
+        matcherFn(['SWR_USE_FETCH_TOPIC', 'agent_other-id', { isInbox: false, pageSize: 20 }]),
       ).toBe(false);
       // Should not match non-array keys
       expect(matcherFn('some-string')).toBe(false);
       // Should not match keys with wrong prefix
-      expect(matcherFn(['OTHER_KEY', { agentId: activeAgentId }])).toBe(false);
+      expect(matcherFn(['OTHER_KEY', containerKey, {}])).toBe(false);
     });
 
     it('should handle errors during refreshing topics', async () => {
@@ -301,8 +270,10 @@ describe('topic action', () => {
       await waitFor(() => {
         expect(result.current.data).toEqual({ items: topics, total: topics.length });
       });
-      expect(useChatStore.getState().topicsInit).toBeTruthy();
-      expect(useChatStore.getState().topicDataMap[sessionId]?.items).toEqual(topics);
+      // Verify topics are stored in topicDataMap with correct key
+      expect(
+        useChatStore.getState().topicDataMap[topicMapKey({ agentId: sessionId })]?.items,
+      ).toEqual(topics);
     });
   });
   describe('useSearchTopics', () => {
@@ -365,71 +336,6 @@ describe('topic action', () => {
       // Verify that the refreshMessages was called to update the messages
       expect(refreshMessagesSpy).toHaveBeenCalled();
     });
-
-    it('should reset supervisor todos and cancel supervisor decision for group sessions', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const groupId = 'group-1';
-      const nextTopicId = 'topic-2';
-      const expectedKey = messageMapKey({ agentId: groupId, topicId: nextTopicId });
-
-      await act(async () => {
-        useChatStore.setState({
-          activeAgentId: groupId,
-          activeSessionType: 'group',
-          supervisorTodos: {
-            [messageMapKey({ agentId: groupId, topicId: null })]: [{ id: 'todo' } as any],
-          },
-        });
-      });
-
-      const cancelSpy = vi.spyOn(result.current, 'internal_cancelSupervisorDecision');
-      vi.spyOn(result.current, 'refreshMessages').mockResolvedValue(undefined);
-
-      await act(async () => {
-        await result.current.switchTopic(nextTopicId);
-      });
-
-      expect(cancelSpy).toHaveBeenCalledWith(groupId);
-      expect(useChatStore.getState().supervisorTodos[expectedKey]).toEqual([]);
-    });
-
-    it('should detect group sessions from session store when type is not cached', async () => {
-      const { result } = renderHook(() => useChatStore());
-      const groupId = 'group-from-session';
-      const newTopicId = 'topic-session';
-      const expectedKey = messageMapKey({ agentId: groupId, topicId: newTopicId });
-
-      await act(async () => {
-        useChatStore.setState({
-          activeAgentId: groupId,
-          activeSessionType: undefined,
-          supervisorTodos: {},
-        });
-      });
-
-      useSessionStore.setState({
-        activeId: groupId,
-        sessions: [
-          {
-            id: groupId,
-            createdAt: new Date(0),
-            updatedAt: new Date(0),
-            meta: {},
-            type: LobeSessionType.Group,
-          } as any,
-        ],
-      });
-
-      const cancelSpy = vi.spyOn(result.current, 'internal_cancelSupervisorDecision');
-      vi.spyOn(result.current, 'refreshMessages').mockResolvedValue(undefined);
-
-      await act(async () => {
-        await result.current.switchTopic(newTopicId);
-      });
-
-      expect(cancelSpy).toHaveBeenCalledWith(groupId);
-      expect(useChatStore.getState().supervisorTodos[expectedKey]).toEqual([]);
-    });
   });
   describe('removeSessionTopics', () => {
     it('should remove all topics from the current session and refresh the topic list', async () => {
@@ -462,7 +368,12 @@ describe('topic action', () => {
       await act(async () => {
         useChatStore.setState({
           topicDataMap: {
-            [groupId]: { items: topics, total: topics.length, currentPage: 0, hasMore: false },
+            [topicMapKey({ groupId })]: {
+              items: topics,
+              total: topics.length,
+              currentPage: 0,
+              hasMore: false,
+            },
           },
         });
       });
@@ -512,12 +423,11 @@ describe('topic action', () => {
         await result.current.removeTopic(topicId);
       });
 
-      expect(messageService.removeMessagesByAssistant).toHaveBeenCalledWith(activeAgentId, topicId);
       expect(topicService.removeTopic).toHaveBeenCalledWith(topicId);
       expect(refreshTopicSpy).toHaveBeenCalled();
       expect(switchTopicSpy).toHaveBeenCalled();
     });
-    it('should remove a specific topic and its messages, then not refresh the topic list', async () => {
+    it('should remove a specific topic and its messages, then not switch topic if not active', async () => {
       const topicId = 'topic-1';
       const { result } = renderHook(() => useChatStore());
       const activeAgentId = 'test-session-id';
@@ -533,10 +443,48 @@ describe('topic action', () => {
         await result.current.removeTopic(topicId);
       });
 
-      expect(messageService.removeMessagesByAssistant).toHaveBeenCalledWith(activeAgentId, topicId);
       expect(topicService.removeTopic).toHaveBeenCalledWith(topicId);
       expect(refreshTopicSpy).toHaveBeenCalled();
       expect(switchTopicSpy).not.toHaveBeenCalled();
+    });
+
+    it('should remove topic when activeGroupId is set (group scenario)', async () => {
+      const topicId = 'topic-1';
+      const { result } = renderHook(() => useChatStore());
+      const activeGroupId = 'test-group-id';
+
+      await act(async () => {
+        useChatStore.setState({ activeGroupId, activeTopicId: topicId });
+      });
+
+      const refreshTopicSpy = vi.spyOn(result.current, 'refreshTopic');
+      const switchTopicSpy = vi.spyOn(result.current, 'switchTopic');
+
+      await act(async () => {
+        await result.current.removeTopic(topicId);
+      });
+
+      expect(topicService.removeTopic).toHaveBeenCalledWith(topicId);
+      expect(refreshTopicSpy).toHaveBeenCalled();
+      expect(switchTopicSpy).toHaveBeenCalled();
+    });
+
+    it('should not remove topic when neither agentId nor groupId is active', async () => {
+      const topicId = 'topic-1';
+      const { result } = renderHook(() => useChatStore());
+
+      await act(async () => {
+        useChatStore.setState({ activeAgentId: undefined, activeGroupId: undefined });
+      });
+
+      const refreshTopicSpy = vi.spyOn(result.current, 'refreshTopic');
+
+      await act(async () => {
+        await result.current.removeTopic(topicId);
+      });
+
+      expect(topicService.removeTopic).not.toHaveBeenCalled();
+      expect(refreshTopicSpy).not.toHaveBeenCalled();
     });
   });
   describe('removeUnstarredTopic', () => {
@@ -552,7 +500,12 @@ describe('topic action', () => {
         useChatStore.setState({
           activeAgentId: 'abc',
           topicDataMap: {
-            abc: { items: topics, total: topics.length, currentPage: 0, hasMore: false },
+            [topicMapKey({ agentId: 'abc' })]: {
+              items: topics,
+              total: topics.length,
+              currentPage: 0,
+              hasMore: false,
+            },
           },
         });
       });
@@ -594,7 +547,12 @@ describe('topic action', () => {
       await act(async () => {
         useChatStore.setState({
           topicDataMap: {
-            test: { items: topics, total: topics.length, currentPage: 0, hasMore: false },
+            [topicMapKey({ agentId: 'test' })]: {
+              items: topics,
+              total: topics.length,
+              currentPage: 0,
+              hasMore: false,
+            },
           },
           activeAgentId: 'test',
         });
@@ -669,7 +627,12 @@ describe('topic action', () => {
         useChatStore.setState({
           activeAgentId: 'abc',
           topicDataMap: {
-            abc: { items: topics, total: topics.length, currentPage: 0, hasMore: false },
+            [topicMapKey({ agentId: 'abc' })]: {
+              items: topics,
+              total: topics.length,
+              currentPage: 0,
+              hasMore: false,
+            },
           },
         });
       });
