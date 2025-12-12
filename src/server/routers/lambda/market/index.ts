@@ -442,7 +442,6 @@ export const marketRouter = router({
       }
     }),
 
-  
   getPluginDetail: marketProcedure
     .input(
       z.object({
@@ -465,8 +464,7 @@ export const marketRouter = router({
       }
     }),
 
-  
-getPluginIdentifiers: marketProcedure.query(async ({ ctx }) => {
+  getPluginIdentifiers: marketProcedure.query(async ({ ctx }) => {
     log('getPluginIdentifiers called');
 
     try {
@@ -480,8 +478,7 @@ getPluginIdentifiers: marketProcedure.query(async ({ ctx }) => {
     }
   }),
 
-  
-getPluginList: marketProcedure
+  getPluginList: marketProcedure
     .input(
       z
         .object({
@@ -509,9 +506,8 @@ getPluginList: marketProcedure
       }
     }),
 
-  
-// ============================== Providers ==============================
-getProviderDetail: marketProcedure
+  // ============================== Providers ==============================
+  getProviderDetail: marketProcedure
     .input(
       z.object({
         identifier: z.string(),
@@ -533,9 +529,7 @@ getProviderDetail: marketProcedure
       }
     }),
 
-  
-  
-getProviderIdentifiers: marketProcedure.query(async ({ ctx }) => {
+  getProviderIdentifiers: marketProcedure.query(async ({ ctx }) => {
     log('getProviderIdentifiers called');
 
     try {
@@ -549,8 +543,7 @@ getProviderIdentifiers: marketProcedure.query(async ({ ctx }) => {
     }
   }),
 
-  
-getProviderList: marketProcedure
+  getProviderList: marketProcedure
     .input(
       z
         .object({
@@ -578,7 +571,7 @@ getProviderList: marketProcedure
     }),
 
   // ============================== User Profile ==============================
-getUserInfo: marketProcedure
+  getUserInfo: marketProcedure
     .input(
       z.object({
         locale: z.string().optional(),
